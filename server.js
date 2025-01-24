@@ -145,7 +145,113 @@ app.get('/api/account', authenticate, async (req, res) => {
   }
 });
 
-// Forget Password Route (Example for Reset)
+// Helper function to send OTP via email
+const sendOtpEmail = async (email, otp, userName) => {
+  let transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: 'Password Reset OTP',
+    html: `
+      <html>
+        <head>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              background-color: #f4f7f6;
+              color: #333;
+              padding: 20px;
+            }
+            .email-container {
+              background-color: #ffffff;
+              border-radius: 8px;
+              box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+              padding: 20px;
+              max-width: 600px;
+              margin: 0 auto;
+            }
+            .header {
+              background-color: #2980b9;
+              color: white;
+              text-align: center;
+              padding: 15px;
+              border-radius: 8px;
+            }
+            .header h2 {
+              margin: 0;
+              font-size: 24px;
+            }
+            .content {
+              margin-top: 20px;
+            }
+            .content p {
+              font-size: 16px;
+              line-height: 1.5;
+            }
+            .otp-box {
+              padding: 10px;
+              background-color: #34495e;
+              color: white;
+              font-size: 20px;
+              text-align: center;
+              border-radius: 5px;
+              margin-top: 15px;
+              font-weight: bold;
+            }
+            .footer {
+              margin-top: 20px;
+              background-color: #2980b9;
+              color: white;
+              padding: 10px;
+              text-align: center;
+              border-radius: 8px;
+            }
+            .footer a {
+              color: white;
+              text-decoration: none;
+              font-weight: bold;
+            }
+            .footer a:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="email-container">
+            <div class="header">
+              <h2>Password Reset Request</h2>
+            </div>
+            <div class="content">
+              <p>Hello <strong>${userName}</strong>,</p>
+              <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
+              <div class="otp-box">${otp}</div>
+              <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
+            </div>
+            <div class="footer">
+              <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+  } catch (error) {
+    console.error('Error sending OTP email:', error);
+    throw new Error('Failed to send OTP email');
+  }
+};
+
+// Forget Password Route (Send OTP)
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -161,154 +267,12 @@ app.post('/api/forgot-password', async (req, res) => {
     user.otpExpiration = Date.now() + 3600000; // OTP expires in 1 hour
     await user.save();
 
-    // Send OTP via email (Nodemailer setup)
-    let transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
-    });
+    // Send OTP via email
+    await sendOtpEmail(user.email, otp, user.name);
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'Password Reset OTP',
-      html: `
-        <html>
-          <head>
-            <style>
-              body {
-                font-family: Arial, sans-serif;
-                background-color: #f4f7f6;
-                color: #333;
-                padding: 20px;
-              }
-              .email-container {
-                background-color: #ffffff;
-                border-radius: 8px;
-                box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
-                padding: 20px;
-                max-width: 600px;
-                margin: 0 auto;
-              }
-              .header {
-                background-color: #2980b9;
-                color: white;
-                text-align: center;
-                padding: 15px;
-                border-radius: 8px;
-              }
-              .header h2 {
-                margin: 0;
-                font-size: 24px;
-              }
-              .content {
-                margin-top: 20px;
-              }
-              .content p {
-                font-size: 16px;
-                line-height: 1.5;
-              }
-              .otp-box {
-                padding: 10px;
-                background-color: #34495e;
-                color: white;
-                font-size: 20px;
-                text-align: center;
-                border-radius: 5px;
-                margin-top: 15px;
-                font-weight: bold;
-              }
-              .footer {
-                margin-top: 20px;
-                background-color: #2980b9;
-                color: white;
-                padding: 10px;
-                text-align: center;
-                border-radius: 8px;
-              }
-              .footer a {
-                color: white;
-                text-decoration: none;
-                font-weight: bold;
-              }
-              .footer a:hover {
-                text-decoration: underline;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="email-container">
-              <div class="header">
-                <h2>Password Reset Request</h2>
-              </div>
-              <div class="content">
-                <p>Hello <strong>${user.name}</strong>,</p>
-                <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
-                <div class="otp-box">${otp}</div>
-                <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
-                <p><strong>User Information:</strong></p>
-                <ul>
-                  <li><strong>Email:</strong> ${user.email}</li>
-                  <li><strong>Phone Number:</strong> ${user.phone}</li>
-                </ul>
-              </div>
-              <div class="footer">
-                <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
-              </div>
-            </div>
-          </body>
-        </html>
-      `
-    };
-
-    transporter.sendMail(mailOptions, (err, info) => {
-      if (err) {
-        return res.status(500).json({ message: 'Failed to send OTP email' });
-      }
-      res.status(200).json({ message: 'OTP sent to email.' });  // Ensure a message is sent back to frontend
-    });
+    res.status(200).json({ message: 'OTP sent to email.' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
-});
- </style>
-          </head>
-          <body>
-            <div class="email-container">
-              <div class="header">
-                <h2>Password Reset Request</h2>
-              </div>
-              <div class="content">
-                <p>Hello <strong>${user.name}</strong>,</p>
-                <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
-                <div class="otp-box">${otp}</div>
-                <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
-                <p><strong>User Information:</strong></p>
-                <ul>
-                  <li><strong>Email:</strong> ${user.email}</li>
-                  <li><strong>Phone Number:</strong> ${user.phone}</li>
-                </ul>
-              </div>
-              <div class="footer">
-                <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
-              </div>
-            </div>
-          </body>
-        </html>
-      `
-    };
-
-    transporter.sendMail(mailOptions, (err, info) => {
-      if (err) {
-        return res.status(500).json({ message: 'Failed to send OTP email' });
-      }
-      res.status(200).json({ message: 'OTP sent to email.' });
-    });
-  } catch (err) {
-    console.error(err);
+    console.error('Error in forgot-password:', err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
@@ -324,12 +288,8 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     // Check if OTP is valid and not expired
-    if (user.otp !== otp) {
-      return res.status(400).json({ message: 'Invalid OTP' });
-    }
-
-    if (Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'OTP expired' });
+    if (user.otp !== otp || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
     }
 
     // Hash new password
@@ -343,7 +303,7 @@ app.post('/api/reset-password', async (req, res) => {
 
     res.status(200).json({ message: 'Password reset successfully.' });
   } catch (err) {
-    console.error(err);
+    console.error('Error in reset-password:', err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
