@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const app = express();
 
 // Middleware
-app.use(cors({ origin: 'https://jokercreation.netlify.app' })); // Allowing Netlify frontend to access backend
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://jokercreation.netlify.app' })); // Allowing Netlify frontend to access backend
 app.use(bodyParser.json()); // Parse incoming JSON requests
 
 // MongoDB connection setup
