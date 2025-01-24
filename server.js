@@ -45,23 +45,6 @@ const generateJWT = (user) => {
   );
 };
 
-// Middleware to verify JWT token
-const authenticate = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ message: 'Authentication failed, token missing.' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
-    req.user = decoded; // Add user to request object
-    next(); // Move to next middleware or route handler
-  } catch (error) {
-    return res.status(401).json({ message: 'Authentication failed, invalid token.' });
-  }
-};
-
 // Signup Route
 app.post('/api/signup', async (req, res) => {
   const { email, password, name, phone } = req.body;
@@ -90,168 +73,7 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Login Route
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  const lowercaseEmail = email.toLowerCase();
-
-  try {
-    const user = await User.findOne({ email: lowercaseEmail });
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials' });
-    }
-
-    // Update last login date
-    user.lastLogin = Date.now();
-    await user.save();
-
-    const token = generateJWT(user);
-    res.status(200).json({
-      success: true,
-      token,
-      message: 'Login successful',
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
-});
-
-// Account Route to fetch user details
-app.get('/api/account', authenticate, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
-    }
-
-    res.status(200).json({
-      user: {
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        status: user.status,
-        lastLogin: user.lastLogin
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching user data:', error);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
-});
-
-// Helper function to send OTP via email
-const sendOtpEmail = async (email, otp, userName) => {
-  let transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
-    to: email,
-    subject: 'Password Reset OTP',
-    html: `
-      <html>
-        <head>
-          <style>
-            body {
-              font-family: Arial, sans-serif;
-              background-color: #f4f7f6;
-              color: #333;
-              padding: 20px;
-            }
-            .email-container {
-              background-color: #ffffff;
-              border-radius: 8px;
-              box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
-              padding: 20px;
-              max-width: 600px;
-              margin: 0 auto;
-            }
-            .header {
-              background-color: #2980b9;
-              color: white;
-              text-align: center;
-              padding: 15px;
-              border-radius: 8px;
-            }
-            .header h2 {
-              margin: 0;
-              font-size: 24px;
-            }
-            .content {
-              margin-top: 20px;
-            }
-            .content p {
-              font-size: 16px;
-              line-height: 1.5;
-            }
-            .otp-box {
-              padding: 10px;
-              background-color: #34495e;
-              color: white;
-              font-size: 20px;
-              text-align: center;
-              border-radius: 5px;
-              margin-top: 15px;
-              font-weight: bold;
-            }
-            .footer {
-              margin-top: 20px;
-              background-color: #2980b9;
-              color: white;
-              padding: 10px;
-              text-align: center;
-              border-radius: 8px;
-            }
-            .footer a {
-              color: white;
-              text-decoration: none;
-              font-weight: bold;
-            }
-            .footer a:hover {
-              text-decoration: underline;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="email-container">
-            <div class="header">
-              <h2>Password Reset Request</h2>
-            </div>
-            <div class="content">
-              <p>Hello <strong>${userName}</strong>,</p>
-              <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
-              <div class="otp-box">${otp}</div>
-              <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
-            </div>
-            <div class="footer">
-              <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `
-  };
-
-  try {
-    await transporter.sendMail(mailOptions);
-  } catch (error) {
-    console.error('Error sending OTP email:', error);
-    throw new Error('Failed to send OTP email');
-  }
-};
-
-// Forget Password Route (Send OTP)
+// Forget Password Route
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -267,49 +89,131 @@ app.post('/api/forgot-password', async (req, res) => {
     user.otpExpiration = Date.now() + 3600000; // OTP expires in 1 hour
     await user.save();
 
-    // Send OTP via email
-    await sendOtpEmail(user.email, otp, user.name);
+    // Send OTP via email (Nodemailer setup)
+    let transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
 
-    res.status(200).json({ message: 'OTP sent to email.' });
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Password Reset OTP',
+      html: `
+        <html>
+          <head>
+            <style>
+              body {
+                font-family: Arial, sans-serif;
+                background-color: #f4f7f6;
+                color: #333;
+                padding: 20px;
+              }
+              .email-container {
+                background-color: #ffffff;
+                border-radius: 8px;
+                box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+                padding: 20px;
+                max-width: 600px;
+                margin: 0 auto;
+              }
+              .header {
+                background-color: #2980b9;
+                color: white;
+                text-align: center;
+                padding: 15px;
+                border-radius: 8px;
+              }
+              .header h2 {
+                margin: 0;
+                font-size: 24px;
+              }
+              .otp {
+                font-size: 22px;
+                text-align: center;
+                padding: 20px;
+                border-radius: 5px;
+                background-color: #ecf0f1;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                <h2>OTP for Password Reset</h2>
+              </div>
+              <p>Hello,</p>
+              <p>Use the following OTP to reset your password:</p>
+              <div class="otp">
+                <strong>${otp}</strong>
+              </div>
+              <p>This OTP will expire in 1 hour.</p>
+            </div>
+          </body>
+        </html>
+      `
+    };
+
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        return res.status(500).json({ message: 'Error sending OTP. Please try again later.' });
+      } else {
+        res.status(200).json({ message: 'OTP sent to email.' });
+      }
+    });
   } catch (err) {
-    console.error('Error in forgot-password:', err);
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// Verify OTP Route
+app.post('/api/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user || user.otp !== otp) {
+      return res.status(400).json({ message: 'Invalid OTP.' });
+    }
+
+    if (Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'OTP has expired.' });
+    }
+
+    res.status(200).json({ message: 'OTP verified.' });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
 
 // Reset Password Route
 app.post('/api/reset-password', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
+  const { email, newPassword } = req.body;
 
   try {
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Check if OTP is valid and not expired
-    if (user.otp !== otp || Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
-    }
-
-    // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Update user's password and clear OTP
     user.password = hashedPassword;
-    user.otp = null; // Clear OTP after successful password reset
-    user.otpExpiration = null; // Clear OTP expiration time
+    user.otp = undefined;
+    user.otpExpiration = undefined;
     await user.save();
 
     res.status(200).json({ message: 'Password reset successfully.' });
   } catch (err) {
-    console.error('Error in reset-password:', err);
+    console.error(err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
 
-// Server listener
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+// Server setup
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
