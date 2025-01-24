@@ -1,5 +1,3 @@
-// server.js
-
 require('dotenv').config();
 const express = require('express');
 const nodemailer = require('nodemailer');
@@ -30,8 +28,8 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   name: { type: String, required: true },
   phone: { type: String, required: true },
-  status: { type: String, default: 'Active' },  // Default status field
-  lastLogin: { type: Date, default: Date.now },  // Last login time
+  status: { type: String, default: 'Active' },
+  lastLogin: { type: Date, default: Date.now },
   otp: { type: String }, // Store OTP temporarily
   otpExpiration: { type: Date }, // OTP expiration time
 });
@@ -79,21 +77,23 @@ app.post('/api/signup', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   const lowercaseEmail = email.toLowerCase();
+  console.log("Login attempt for email:", lowercaseEmail); // Debugging: log email
 
   try {
     const user = await User.findOne({ email: lowercaseEmail });
     if (!user) {
+      console.log("User not found");
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Log user details for debugging (remove this for production)
+    console.log("User found:", user);
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+      console.log("Password mismatch");
       return res.status(400).json({ message: 'Invalid credentials' });
     }
-
-    // Update last login date on successful login
-    user.lastLogin = Date.now();
-    await user.save();
 
     const token = generateJWT(user);
     res.status(200).json({
@@ -101,7 +101,7 @@ app.post('/api/login', async (req, res) => {
       message: 'Login successful',
     });
   } catch (err) {
-    console.error(err);
+    console.error("Login error:", err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
@@ -125,7 +125,7 @@ app.post('/api/reset-password', async (req, res) => {
     user.otpExpiration = otpExpiration;
     await user.save();
 
-    // Send OTP via email (with a colorful, professional email format)
+    // Send OTP via email
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
@@ -137,17 +137,8 @@ app.post('/api/reset-password', async (req, res) => {
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'Password Reset Request from Joker Creation Studio',
-      html: `
-        <div style="font-family: Arial, sans-serif; color: #333; padding: 20px; background-color: #f7f7f7;">
-          <h2 style="color: #2196f3;">Hello ${user.name},</h2>
-          <p style="font-size: 16px;">We received a request to reset your password at Joker Creation Studio. Please use the OTP below to reset your password:</p>
-          <h3 style="color: #4caf50;">OTP: <strong>${otp}</strong></h3>
-          <p style="font-size: 14px;">This OTP is valid for 15 minutes. If you did not request a password reset, please ignore this message.</p>
-          <p style="color: #888;">Joker Creation Studio - Capture Moments, Create Memories</p>
-          <p style="font-size: 14px; color: #888;">If you have any questions, feel free to contact us at <a href="mailto:support@jokercreation.com">support@jokercreation.com</a></p>
-        </div>
-      `,
+      subject: 'Password Reset OTP',
+      text: `Your OTP for password reset is: ${otp}. It will expire in 15 minutes.`,
     };
 
     transporter.sendMail(mailOptions, (error, info) => {
