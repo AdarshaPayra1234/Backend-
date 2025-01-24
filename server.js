@@ -62,7 +62,90 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// Forget Password Route (Example for Reset)
+// Signup Route
+app.post('/api/signup', async (req, res) => {
+  const { email, password, name, phone } = req.body;
+  const lowercaseEmail = email.toLowerCase();
+
+  try {
+    const existingUser = await User.findOne({ email: lowercaseEmail });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already registered.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({
+      email: lowercaseEmail,
+      password: hashedPassword,
+      name,
+      phone,
+    });
+
+    await newUser.save();
+    res.status(200).json({ message: 'User registered successfully.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// Login Route
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const lowercaseEmail = email.toLowerCase();
+
+  try {
+    const user = await User.findOne({ email: lowercaseEmail });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // Update last login date
+    user.lastLogin = Date.now();
+    await user.save();
+
+    const token = generateJWT(user);
+    res.status(200).json({
+      success: true,
+      token,
+      message: 'Login successful',
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// Account Route to fetch user details
+app.get('/api/account', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    res.status(200).json({
+      user: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        status: user.status,
+        lastLogin: user.lastLogin
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// Forgot Password Route
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -169,8 +252,6 @@ app.post('/api/forgot-password', async (req, res) => {
                 <ul>
                   <li><strong>Email:</strong> ${user.email}</li>
                   <li><strong>Phone Number:</strong> ${user.phone}</li>
-                  <li><strong>Status:</strong> ${user.status}</li>
-                  <li><strong>Last Login:</strong> ${user.lastLogin}</li>
                 </ul>
               </div>
               <div class="footer">
@@ -194,6 +275,28 @@ app.post('/api/forgot-password', async (req, res) => {
   }
 });
 
+// Verify OTP Route
+app.post('/api/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if OTP is valid and not expired
+    if (user.otp !== otp || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    res.status(200).json({ message: 'OTP verified successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
 // Reset Password Route
 app.post('/api/reset-password', async (req, res) => {
   const { email, otp, newPassword } = req.body;
@@ -206,7 +309,7 @@ app.post('/api/reset-password', async (req, res) => {
 
     // Check if OTP is valid and not expired
     if (user.otp !== otp || Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'Invalid or expired OTP.' });
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
     }
 
     // Hash new password
