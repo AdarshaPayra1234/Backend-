@@ -286,8 +286,12 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     // Check if OTP is valid and not expired
-    if (user.otp !== otp || Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    if (user.otp !== otp) {
+      return res.status(400).json({ message: 'Invalid OTP' });
+    }
+
+    if (Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'OTP expired' });
     }
 
     // Hash new password
