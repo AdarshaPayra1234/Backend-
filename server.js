@@ -7,11 +7,21 @@ const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const cors = require('cors'); // Import cors package
 
 // Create the Express app
 const app = express();
 
+// CORS configuration to allow requests from the front-end server
+const corsOptions = {
+  origin: 'https://jokercreation.netlify.app', // Allow only this domain
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],  // Allow these HTTP methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Allow these headers
+  credentials: true, // Allow cookies if needed
+};
+
 // Middleware
+app.use(cors(corsOptions)); // Use CORS middleware with configuration
 app.use(bodyParser.json()); // Parse incoming JSON requests
 
 // MongoDB connection setup
