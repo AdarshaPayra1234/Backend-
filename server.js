@@ -45,35 +45,24 @@ const generateJWT = (user) => {
   );
 };
 
-// Signup Route
-app.post('/api/signup', async (req, res) => {
-  const { email, password, name, phone } = req.body;
-  const lowercaseEmail = email.toLowerCase();
+// Middleware to verify JWT token
+const authenticate = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(401).json({ message: 'Authentication failed, token missing.' });
+  }
 
   try {
-    const existingUser = await User.findOne({ email: lowercaseEmail });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered.' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = new User({
-      email: lowercaseEmail,
-      password: hashedPassword,
-      name,
-      phone,
-    });
-
-    await newUser.save();
-    res.status(200).json({ message: 'User registered successfully.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
+    req.user = decoded; // Add user to request object
+    next(); // Move to next middleware or route handler
+  } catch (error) {
+    return res.status(401).json({ message: 'Authentication failed, invalid token.' });
   }
-});
+};
 
-// Forget Password Route
+// Forget Password Route (Example for Reset)
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -131,60 +120,74 @@ app.post('/api/forgot-password', async (req, res) => {
                 margin: 0;
                 font-size: 24px;
               }
-              .otp {
-                font-size: 22px;
+              .content {
+                margin-top: 20px;
+              }
+              .content p {
+                font-size: 16px;
+                line-height: 1.5;
+              }
+              .otp-box {
+                padding: 10px;
+                background-color: #34495e;
+                color: white;
+                font-size: 20px;
                 text-align: center;
-                padding: 20px;
                 border-radius: 5px;
-                background-color: #ecf0f1;
+                margin-top: 15px;
+                font-weight: bold;
+              }
+              .footer {
+                margin-top: 20px;
+                background-color: #2980b9;
+                color: white;
+                padding: 10px;
+                text-align: center;
+                border-radius: 8px;
+              }
+              .footer a {
+                color: white;
+                text-decoration: none;
+                font-weight: bold;
+              }
+              .footer a:hover {
+                text-decoration: underline;
               }
             </style>
           </head>
           <body>
             <div class="email-container">
               <div class="header">
-                <h2>OTP for Password Reset</h2>
+                <h2>Password Reset Request</h2>
               </div>
-              <p>Hello,</p>
-              <p>Use the following OTP to reset your password:</p>
-              <div class="otp">
-                <strong>${otp}</strong>
+              <div class="content">
+                <p>Hello <strong>${user.name}</strong>,</p>
+                <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
+                <div class="otp-box">${otp}</div>
+                <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
+                <p><strong>User Information:</strong></p>
+                <ul>
+                  <li><strong>Email:</strong> ${user.email}</li>
+                  <li><strong>Phone Number:</strong> ${user.phone}</li>
+                  <li><strong>Status:</strong> ${user.status}</li>
+                  <li><strong>Last Login:</strong> ${user.lastLogin}</li>
+                </ul>
               </div>
-              <p>This OTP will expire in 1 hour.</p>
+              <div class="footer">
+                <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
+              </div>
             </div>
           </body>
         </html>
       `
     };
 
-    transporter.sendMail(mailOptions, (error, info) => {
-      if (error) {
-        return res.status(500).json({ message: 'Error sending OTP. Please try again later.' });
-      } else {
-        res.status(200).json({ message: 'OTP sent to email.' });
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) {
+        return res.status(500).json({ message: 'Failed to send OTP email' });
       }
+      res.status(200).json({ message: 'OTP sent to email.' });
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
-});
-
-// Verify OTP Route
-app.post('/api/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-
-  try {
-    const user = await User.findOne({ email });
-    if (!user || user.otp !== otp) {
-      return res.status(400).json({ message: 'Invalid OTP.' });
-    }
-
-    if (Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'OTP has expired.' });
-    }
-
-    res.status(200).json({ message: 'OTP verified.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
@@ -193,18 +196,26 @@ app.post('/api/verify-otp', async (req, res) => {
 
 // Reset Password Route
 app.post('/api/reset-password', async (req, res) => {
-  const { email, newPassword } = req.body;
+  const { email, otp, newPassword } = req.body;
 
   try {
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
+      return res.status(404).json({ message: 'User not found' });
     }
 
+    // Check if OTP is valid and not expired
+    if (user.otp !== otp || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'Invalid or expired OTP.' });
+    }
+
+    // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update user's password and clear OTP
     user.password = hashedPassword;
-    user.otp = undefined;
-    user.otpExpiration = undefined;
+    user.otp = null; // Clear OTP after successful password reset
+    user.otpExpiration = null; // Clear OTP expiration time
     await user.save();
 
     res.status(200).json({ message: 'Password reset successfully.' });
@@ -214,6 +225,8 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// Server setup
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// Server listener
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
