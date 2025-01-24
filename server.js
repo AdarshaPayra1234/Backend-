@@ -145,7 +145,7 @@ app.get('/api/account', authenticate, async (req, res) => {
   }
 });
 
-// Forget Password Route (Example for Reset)
+// Forget Password Route (Fix for OTP Sending)
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -220,22 +220,6 @@ app.post('/api/forgot-password', async (req, res) => {
                 margin-top: 15px;
                 font-weight: bold;
               }
-              .footer {
-                margin-top: 20px;
-                background-color: #2980b9;
-                color: white;
-                padding: 10px;
-                text-align: center;
-                border-radius: 8px;
-              }
-              .footer a {
-                color: white;
-                text-decoration: none;
-                font-weight: bold;
-              }
-              .footer a:hover {
-                text-decoration: underline;
-              }
             </style>
           </head>
           <body>
@@ -247,15 +231,7 @@ app.post('/api/forgot-password', async (req, res) => {
                 <p>Hello <strong>${user.name}</strong>,</p>
                 <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
                 <div class="otp-box">${otp}</div>
-                <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
-                <p><strong>User Information:</strong></p>
-                <ul>
-                  <li><strong>Email:</strong> ${user.email}</li>
-                  <li><strong>Phone Number:</strong> ${user.phone}</li>
-                </ul>
-              </div>
-              <div class="footer">
-                <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
+                <p>If you didn’t request a password reset, please ignore this email.</p>
               </div>
             </div>
           </body>
@@ -267,8 +243,30 @@ app.post('/api/forgot-password', async (req, res) => {
       if (err) {
         return res.status(500).json({ message: 'Failed to send OTP email' });
       }
-      res.status(200).json({ message: 'OTP sent successfully to email.' });
+      res.status(200).json({ message: 'OTP sent to email' });
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// OTP Verification Route
+app.post('/api/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if OTP is valid and not expired
+    if (user.otp !== otp || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    res.status(200).json({ message: 'OTP verified' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
@@ -306,8 +304,8 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// Server listener
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// Start the server
+const port = process.env.PORT || 5000;
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
