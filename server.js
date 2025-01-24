@@ -267,6 +267,44 @@ app.post('/api/forgot-password', async (req, res) => {
       if (err) {
         return res.status(500).json({ message: 'Failed to send OTP email' });
       }
+      res.status(200).json({ message: 'OTP sent to email.' });  // Ensure a message is sent back to frontend
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+ </style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                <h2>Password Reset Request</h2>
+              </div>
+              <div class="content">
+                <p>Hello <strong>${user.name}</strong>,</p>
+                <p>We received a request to reset your password. To complete the process, please use the OTP (One-Time Password) below:</p>
+                <div class="otp-box">${otp}</div>
+                <p>If you didn’t request a password reset, please ignore this email or contact support.</p>
+                <p><strong>User Information:</strong></p>
+                <ul>
+                  <li><strong>Email:</strong> ${user.email}</li>
+                  <li><strong>Phone Number:</strong> ${user.phone}</li>
+                </ul>
+              </div>
+              <div class="footer">
+                <p>If you need further assistance, feel free to <a href="mailto:support@jokercreation.com">contact us</a>.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `
+    };
+
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) {
+        return res.status(500).json({ message: 'Failed to send OTP email' });
+      }
       res.status(200).json({ message: 'OTP sent to email.' });
     });
   } catch (err) {
