@@ -4,24 +4,16 @@ require('dotenv').config();
 const express = require('express');
 const nodemailer = require('nodemailer');
 const bodyParser = require('body-parser');
+const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
-const cors = require('cors'); // Import cors package
 
 // Create the Express app
 const app = express();
 
-// CORS configuration to allow requests from the front-end server
-const corsOptions = {
-  origin: 'https://jokercreation.netlify.app', // Allow only this domain
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],  // Allow these HTTP methods
-  allowedHeaders: ['Content-Type', 'Authorization'], // Allow these headers
-  credentials: true, // Allow cookies if needed
-};
-
 // Middleware
-app.use(cors(corsOptions)); // Use CORS middleware with configuration
+app.use(cors({ origin: 'https://jokercreation.netlify.app' })); // Allowing Netlify frontend to access backend
 app.use(bodyParser.json()); // Parse incoming JSON requests
 
 // MongoDB connection setup
@@ -38,8 +30,8 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   name: { type: String, required: true },
   phone: { type: String, required: true },
-  status: { type: String, default: 'Active' },
-  lastLogin: { type: Date, default: Date.now },
+  status: { type: String, default: 'Active' },  // Default status field
+  lastLogin: { type: Date, default: Date.now },  // Last login time
   otp: { type: String }, // Store OTP temporarily
   otpExpiration: { type: Date }, // OTP expiration time
 });
@@ -98,6 +90,10 @@ app.post('/api/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
+
+    // Update last login date on successful login
+    user.lastLogin = Date.now();
+    await user.save();
 
     const token = generateJWT(user);
     res.status(200).json({
@@ -167,9 +163,9 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// Password Update Route (after OTP verification)
-app.post('/api/update-password', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
+// OTP Verification Route
+app.post('/api/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
 
   try {
     const user = await User.findOne({ email });
@@ -182,7 +178,23 @@ app.post('/api/update-password', async (req, res) => {
       return res.status(400).json({ message: 'Invalid or expired OTP' });
     }
 
-    // Hash the new password and update the user's password
+    res.status(200).json({ message: 'OTP verified' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// Password Update Route (after OTP verification)
+app.post('/api/update-password', async (req, res) => {
+  const { email, newPassword } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
     user.otp = null; // Clear OTP after password reset
