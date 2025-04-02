@@ -6,22 +6,29 @@ const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const app = express();
 
-// Middleware
+// Enhanced CORS Configuration
 app.use(cors({
   origin: 'https://jokercreation.store',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
-app.use(express.json());
+
+// Handle preflight requests
+app.options('*', cors());
 
 // Database Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
+  retryWrites: true,
+  w: 'majority'
 })
-.then(() => console.log('MongoDB connected'))
+.then(() => console.log('MongoDB connected successfully'))
 .catch(err => console.error('MongoDB connection error:', err));
 
 // User Schema
@@ -30,36 +37,84 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String },
   googleId: { type: String },
+  phone: { type: String },
   emailVerified: { type: Boolean, default: false },
+  phoneVerified: { type: Boolean, default: false },
   verificationToken: { type: String },
   verificationTokenExpires: { type: Date },
+  otp: { type: String },
+  otpExpiration: { type: Date },
   lastLogin: { type: Date, default: Date.now }
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
 
-// Initialize Google Auth
+// Initialize Google Auth Client
 const googleClient = new OAuth2Client({
   clientId: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET
 });
 
+// Email Transport Configuration
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
 // Helper Functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+
 const generateJWT = (user) => jwt.sign(
   { userId: user._id, email: user.email },
   process.env.JWT_SECRET,
-  { expiresIn: '1h' }
+  { expiresIn: '24h' }
 );
+
+// Send Verification Email
+const sendVerificationEmail = async (email, name, token) => {
+  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  
+  await transporter.sendMail({
+    from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: 'Verify Your Email Address',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #be9c65;">Welcome to Joker Creation Studio</h2>
+        <p>Hello ${name},</p>
+        <p>Please click the button below to verify your email address:</p>
+        <a href="${verificationUrl}" 
+           style="display: inline-block; padding: 10px 20px; background-color: #be9c65; color: white; text-decoration: none; border-radius: 4px;">
+          Verify Email
+        </a>
+        <p>If you didn't create an account, please ignore this email.</p>
+      </div>
+    `
+  });
+};
+
+// Send SMS Verification (Mock - Replace with actual SMS service)
+const sendSmsVerification = async (phone, code) => {
+  console.log(`SMS verification code ${code} sent to ${phone}`);
+  return true;
+};
 
 // Routes
 
-// Health Check
+// Health Check Endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date() });
+  res.json({ 
+    status: 'healthy',
+    timestamp: new Date(),
+    version: '1.0.0'
+  });
 });
 
-// Google Signup Endpoint
+// Google Sign-In Endpoint
 app.post('/api/signup/google', async (req, res) => {
   try {
     const { credential } = req.body;
@@ -67,23 +122,23 @@ app.post('/api/signup/google', async (req, res) => {
     if (!credential) {
       return res.status(400).json({ 
         success: false,
-        message: 'No Google credential provided' 
+        message: 'No Google credential provided'
       });
     }
 
-    // Verify Google ID token
+    // Verify the Google ID token
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID
     });
 
     const payload = ticket.getPayload();
-    
+
     // Validate required fields
-    if (!payload.email || !payload.email_verified) {
+    if (!payload.email_verified) {
       return res.status(400).json({ 
         success: false,
-        message: 'Google email not verified' 
+        message: 'Google email not verified'
       });
     }
 
@@ -93,7 +148,7 @@ app.post('/api/signup/google', async (req, res) => {
       {
         $set: {
           name: payload.name,
-          email: payload.email,
+          email: payload.email.toLowerCase(),
           googleId: payload.sub,
           emailVerified: true,
           lastLogin: new Date()
@@ -112,7 +167,9 @@ app.post('/api/signup/google', async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        emailVerified: user.emailVerified
+        emailVerified: user.emailVerified,
+        phone: user.phone,
+        phoneVerified: user.phoneVerified
       }
     });
 
@@ -129,19 +186,27 @@ app.post('/api/signup/google', async (req, res) => {
 // Regular Email Signup
 app.post('/api/signup', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, phone } = req.body;
     
+    // Validate input
+    if (!name || !email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Name, email and password are required'
+      });
+    }
+
     // Check if user exists
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ 
         success: false,
-        message: 'Email already registered' 
+        message: 'Email already registered'
       });
     }
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const verificationToken = generateToken();
 
     // Create new user
@@ -149,18 +214,20 @@ app.post('/api/signup', async (req, res) => {
       name,
       email: email.toLowerCase(),
       password: hashedPassword,
+      phone,
       verificationToken,
       verificationTokenExpires: Date.now() + 24 * 3600000 // 24 hours
     });
 
     await newUser.save();
 
-    // In production, you would send a verification email here
-    console.log(`Verification token for ${email}: ${verificationToken}`);
+    // Send verification email
+    await sendVerificationEmail(email, name, verificationToken);
 
     res.status(201).json({ 
       success: true,
-      message: 'Registration successful. Please check your email for verification.'
+      message: 'Registration successful. Please check your email for verification.',
+      userId: newUser._id
     });
 
   } catch (error) {
@@ -185,10 +252,11 @@ app.get('/api/verify-email', async (req, res) => {
     if (!user) {
       return res.status(400).json({ 
         success: false,
-        message: 'Invalid or expired verification token' 
+        message: 'Invalid or expired verification token'
       });
     }
 
+    // Mark email as verified
     user.emailVerified = true;
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
@@ -196,14 +264,146 @@ app.get('/api/verify-email', async (req, res) => {
 
     res.json({ 
       success: true,
-      message: 'Email verified successfully' 
+      message: 'Email verified successfully'
     });
 
   } catch (error) {
     console.error('Email verification error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Server error during email verification' 
+      message: 'Server error during email verification'
+    });
+  }
+});
+
+// Phone Verification
+app.post('/api/send-phone-verification', async (req, res) => {
+  try {
+    const { userId, phone } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Generate and save OTP
+    const otp = generateOTP();
+    user.otp = otp;
+    user.otpExpiration = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    // Send SMS
+    await sendSmsVerification(phone, otp);
+
+    res.json({ 
+      success: true,
+      message: 'Verification code sent to your phone'
+    });
+
+  } catch (error) {
+    console.error('Phone verification error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to send verification code'
+    });
+  }
+});
+
+// Verify Phone OTP
+app.post('/api/verify-phone', async (req, res) => {
+  try {
+    const { userId, code } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check OTP
+    if (user.otp !== code || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification code'
+      });
+    }
+
+    // Mark phone as verified
+    user.phoneVerified = true;
+    user.otp = undefined;
+    user.otpExpiration = undefined;
+    await user.save();
+
+    // Generate new JWT with updated claims
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      message: 'Phone number verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Phone verification error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during phone verification'
+    });
+  }
+});
+
+// Login Endpoint
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Check password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate JWT
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone,
+        phoneVerified: user.phoneVerified
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during login'
     });
   }
 });
@@ -212,4 +412,5 @@ app.get('/api/verify-email', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`CORS configured for: https://jokercreation.store`);
 });
