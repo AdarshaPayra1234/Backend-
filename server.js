@@ -59,7 +59,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// User Schema
+// User Schema with password reset fields
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -70,6 +70,8 @@ const userSchema = new mongoose.Schema({
   emailVerified: { type: Boolean, default: false },
   verificationToken: { type: String },
   verificationTokenExpires: { type: Date },
+  resetPasswordToken: { type: String },
+  resetPasswordExpires: { type: Date },
   ipAddress: { type: String },
   location: {
     country: { type: String },
@@ -148,6 +150,236 @@ app.get('/api/health', (req, res) => {
       email: transporter ? 'configured' : 'not configured'
     }
   });
+});
+
+// Password Reset Endpoints
+
+// Forgot password - initiate reset process
+app.post('/api/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No user found with that email'
+      });
+    }
+
+    // Generate and save reset token
+    const resetToken = generateToken();
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    // Send email with reset link
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${resetToken}`;
+    await sendEmail(
+      user.email,
+      'Password Reset Request - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">Password Reset Request</h2>
+        <p>Hello ${user.name},</p>
+        <p>You are receiving this because you (or someone else) have requested to reset the password for your account.</p>
+        <p>Please click the button below to complete the process:</p>
+        <a href="${resetUrl}" 
+           style="display: inline-block; padding: 12px 24px; background-color: #be9c65; color: white; 
+                  text-decoration: none; border-radius: 4px; font-weight: bold;">
+          Reset Password
+        </a>
+        <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
+        <p>The link will expire in 1 hour.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'Password reset email sent',
+      token: resetToken // Return token for OTP flow
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error processing password reset request'
+    });
+  }
+});
+
+// Resend OTP endpoint
+app.post('/api/resend-otp', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No user found with that email'
+      });
+    }
+
+    // Generate new reset token
+    const resetToken = generateToken();
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    // Send email with new OTP
+    await sendEmail(
+      user.email,
+      'New OTP for Password Reset - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">New OTP for Password Reset</h2>
+        <p>Hello ${user.name},</p>
+        <p>Your new OTP for password reset is: <strong>${resetToken.substring(0, 6)}</strong></p>
+        <p>Enter this code in the password reset form to verify your identity.</p>
+        <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
+        <p>The OTP will expire in 1 hour.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'New OTP sent',
+      token: resetToken
+    });
+
+  } catch (error) {
+    console.error('Resend OTP error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error resending OTP'
+    });
+  }
+});
+
+// Verify OTP endpoint
+app.post('/api/verify-otp', async (req, res) => {
+  try {
+    const { email, otp, token } = req.body;
+    
+    if (!email || !otp || !token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email, OTP and token are required'
+      });
+    }
+
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired OTP'
+      });
+    }
+
+    // Simple OTP verification (first 6 chars of token)
+    if (token.substring(0, 6) !== otp) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      token: user.resetPasswordToken // Return same token for password reset
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error verifying OTP'
+    });
+  }
+});
+
+// Reset password endpoint
+app.post('/api/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+    
+    if (!email || !token || !newPassword) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email, token and new password are required'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Password must be at least 8 characters'
+      });
+    }
+
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired password reset token'
+      });
+    }
+
+    // Update password and clear reset token
+    user.password = await bcrypt.hash(newPassword, 12);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    // Send confirmation email
+    await sendEmail(
+      user.email,
+      'Password Changed - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">Password Changed Successfully</h2>
+        <p>Hello ${user.name},</p>
+        <p>This is a confirmation that the password for your account <strong>${user.email}</strong> has been changed.</p>
+        <p>If you did not make this change, please contact us immediately.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully'
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error resetting password'
+    });
+  }
 });
 
 // Google Sign-In Endpoint (Signup)
