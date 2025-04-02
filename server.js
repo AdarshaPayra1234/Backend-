@@ -356,57 +356,81 @@ app.get('/api/verify-email', async (req, res) => {
 });
 
 // Email Verification Endpoint
-app.get('/api/verify-email', verificationLimiter, async (req, res) => {
-  try {
-    const { token } = req.query;
-    
-    if (!token) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Verification token is required'
-      });
+// Email Verification Endpoint
+app.get('/api/verify-email', async (req, res) => {
+    try {
+        const { token } = req.query;
+        
+        // Verify token and update user
+        const user = await User.findOneAndUpdate(
+            { verificationToken: token, verificationTokenExpires: { $gt: Date.now() } },
+            { $set: { emailVerified: true, verificationToken: null, verificationTokenExpires: null } },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired token' });
+        }
+
+        // Generate new JWT with updated status
+        const authToken = generateJWT(user);
+
+        res.json({
+            success: true,
+            message: 'Email verified successfully',
+            token: authToken,
+            user: {
+                id: user._id,
+                email: user.email,
+                phone: user.phone,
+                emailVerified: true,
+                phoneVerified: user.phoneVerified
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server error' });
     }
+});
 
-    const user = await User.findOne({ 
-      verificationToken: token,
-      verificationTokenExpires: { $gt: Date.now() }
-    });
+// Phone Verification Endpoint
+app.post('/api/verify-phone', async (req, res) => {
+    try {
+        const { userId, code } = req.body;
+        
+        const user = await User.findOne({
+            _id: userId,
+            otp: code,
+            otpExpiration: { $gt: Date.now() }
+        });
 
-    if (!user) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid or expired verification token'
-      });
+        if (!user) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+        }
+
+        // Update phone verification status
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $set: { phoneVerified: true, otp: null, otpExpiration: null } },
+            { new: true }
+        );
+
+        const authToken = generateJWT(updatedUser);
+
+        res.json({
+            success: true,
+            message: 'Phone verified successfully',
+            token: authToken,
+            user: {
+                id: updatedUser._id,
+                emailVerified: true,
+                phoneVerified: true
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server error' });
     }
-
-    user.emailVerified = true;
-    user.verificationToken = undefined;
-    user.verificationTokenExpires = undefined;
-    await user.save();
-
-    const authToken = generateJWT(user);
-
-    res.json({ 
-      success: true,
-      message: 'Email verified successfully',
-      token: authToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        emailVerified: user.emailVerified,
-        phone: user.phone,
-        phoneVerified: user.phoneVerified
-      }
-    });
-
-  } catch (error) {
-    console.error('Email verification error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during email verification'
-    });
-  }
 });
 
 // Resend Verification Email with Limits
