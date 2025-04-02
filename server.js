@@ -116,7 +116,7 @@ const generateJWT = (user) => {
 
 // Enhanced Send Verification Email with HTML template
 const sendVerificationEmail = async (email, name, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email.html?token=${token}`;
   
   const mailOptions = {
     from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
