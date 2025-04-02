@@ -357,6 +357,7 @@ app.get('/api/verify-email', async (req, res) => {
 
 // Email Verification Endpoint
 // Email Verification Endpoint
+// In your backend (app.js)
 app.get('/api/verify-email', async (req, res) => {
     try {
         const { token } = req.query;
@@ -372,10 +373,18 @@ app.get('/api/verify-email', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid token' });
         }
 
-        // Redirect back to signup with verified email pre-filled
-        const redirectUrl = `${process.env.FRONTEND_URL}/signup.html?email=${encodeURIComponent(user.email)}&verified=true`;
-        
-        res.redirect(redirectUrl);
+        // Return user data including phone number
+        res.json({
+            success: true,
+            message: 'Email verified successfully',
+            user: {
+                id: user._id,
+                email: user.email,
+                phone: user.phone,
+                emailVerified: true,
+                phoneVerified: user.phoneVerified
+            }
+        });
 
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error' });
