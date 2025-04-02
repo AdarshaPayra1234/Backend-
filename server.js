@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 // Validate critical environment variables
-const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'];
+const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL'];
 requiredEnvVars.forEach(varName => {
   if (!process.env[varName]) {
     throw new Error(`Missing required environment variable: ${varName}`);
@@ -24,7 +24,7 @@ const app = express();
 
 // Enhanced CORS Configuration
 app.use(cors({
-  origin: 'https://jokercreation.store',
+  origin: process.env.FRONTEND_URL,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -32,6 +32,7 @@ app.use(cors({
 
 // Middleware to parse JSON bodies
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Handle preflight requests
 app.options('*', cors());
@@ -98,7 +99,7 @@ const generateJWT = (user) => {
 
 // Send Verification Email
 const sendVerificationEmail = async (email, name, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL}/signup.html?action=verify-email&token=${token}`;
   
   await transporter.sendMail({
     from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
@@ -254,7 +255,6 @@ app.post('/api/signup', async (req, res) => {
 // Fixed Login Endpoint
 app.post('/api/login', async (req, res) => {
   try {
-    // Validate request body exists
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({
         success: false,
@@ -264,7 +264,6 @@ app.post('/api/login', async (req, res) => {
 
     const { email, password } = req.body;
     
-    // Validate required fields
     if (!email || !password) {
       return res.status(400).json({ 
         success: false,
@@ -280,7 +279,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ 
@@ -289,7 +287,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    // Check if email is verified
     if (!user.emailVerified) {
       return res.status(403).json({
         success: false,
@@ -297,11 +294,9 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate JWT
     const token = generateJWT(user);
 
     res.json({
@@ -326,11 +321,18 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Email Verification
+// Updated Email Verification Endpoint
 app.get('/api/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
     
+    if (!token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
+
     const user = await User.findOne({ 
       verificationToken: token,
       verificationTokenExpires: { $gt: Date.now() }
@@ -350,7 +352,8 @@ app.get('/api/verify-email', async (req, res) => {
 
     res.json({ 
       success: true,
-      message: 'Email verified successfully'
+      message: 'Email verified successfully',
+      redirectUrl: `${process.env.FRONTEND_URL}/login.html?verified=true`
     });
 
   } catch (error) {
@@ -358,6 +361,54 @@ app.get('/api/verify-email', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error during email verification'
+    });
+  }
+});
+
+// Resend Verification Email
+app.post('/api/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is already verified'
+      });
+    }
+
+    const verificationToken = generateToken();
+    user.verificationToken = verificationToken;
+    user.verificationTokenExpires = Date.now() + 24 * 3600000;
+    await user.save();
+
+    await sendVerificationEmail(user.email, user.name, verificationToken);
+
+    res.json({ 
+      success: true,
+      message: 'Verification email resent successfully'
+    });
+
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to resend verification email'
     });
   }
 });
@@ -456,5 +507,5 @@ app.post('/api/verify-phone', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`CORS configured for: https://jokercreation.store`);
+  console.log(`CORS configured for: ${process.env.FRONTEND_URL}`);
 });
