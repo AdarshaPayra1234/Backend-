@@ -430,84 +430,99 @@ app.post('/api/resend-verification', verificationLimiter, async (req, res) => {
   try {
     const { email, userId } = req.body;
     
+    // 1. Input validation
     if (!email && !userId) {
       return res.status(400).json({ 
         success: false,
-        message: 'Email or User ID is required'
+        message: 'Email or User ID is required',
+        code: 'MISSING_IDENTIFIER'
       });
     }
 
-    let user;
-    if (userId) {
-      user = await User.findById(userId);
-    } else {
-      user = await User.findOne({ email: email.toLowerCase() });
-    }
+    // 2. Find user
+    const user = userId 
+      ? await User.findById(userId)
+      : await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        message: 'User not found'
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
       });
     }
 
+    // 3. Check if already verified
     if (user.emailVerified) {
       return res.status(400).json({ 
         success: false,
-        message: 'Email is already verified'
+        message: 'Email is already verified',
+        code: 'ALREADY_VERIFIED'
       });
     }
 
-    // Check email attempt limits (5 per day)
+    // 4. Check attempt limits (5 per day)
     const now = new Date();
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     
     if (user.lastEmailVerificationAttempt > oneDayAgo && 
         user.emailVerificationAttempts >= 5) {
+      const nextAttemptTime = new Date(user.lastEmailVerificationAttempt.getTime() + 24 * 60 * 60 * 1000);
       return res.status(429).json({ 
         success: false,
-        message: 'Email verification limit reached (5 per day)',
-        nextAttemptAllowed: new Date(user.lastEmailVerificationAttempt.getTime() + 24 * 60 * 60 * 1000)
+        message: 'Daily verification limit reached (5 emails per day)',
+        code: 'DAILY_LIMIT_REACHED',
+        nextAttempt: nextAttemptTime,
+        attemptsRemaining: 0
       });
     }
 
-    // Check 1-minute cooldown between attempts
+    // 5. Check 1-minute cooldown
     const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
     if (user.lastEmailVerificationAttempt > oneMinuteAgo) {
+      const nextAttemptTime = new Date(user.lastEmailVerificationAttempt.getTime() + 60 * 1000);
       return res.status(429).json({ 
         success: false,
         message: 'Please wait 1 minute before requesting another verification email',
-        nextAttemptAllowed: new Date(user.lastEmailVerificationAttempt.getTime() + 60 * 1000)
+        code: 'COOLDOWN_ACTIVE',
+        nextAttempt: nextAttemptTime,
+        attemptsRemaining: 5 - user.emailVerificationAttempts
       });
     }
 
+    // 6. Generate new verification token
     const verificationToken = generateToken();
     user.verificationToken = verificationToken;
-    user.verificationTokenExpires = Date.now() + 24 * 3600000;
+    user.verificationTokenExpires = Date.now() + 24 * 3600000; // 24 hours
     
-    // Update attempt tracking
+    // 7. Update attempt tracking
     if (user.lastEmailVerificationAttempt <= oneDayAgo) {
-      user.emailVerificationAttempts = 1;
+      user.emailVerificationAttempts = 1; // Reset counter if >24hrs since last attempt
     } else {
       user.emailVerificationAttempts += 1;
     }
     user.lastEmailVerificationAttempt = now;
     
+    // 8. Save user and send email
     await user.save();
     await sendVerificationEmail(user.email, user.name, verificationToken);
 
+    // 9. Return success response
     res.json({ 
       success: true,
       message: 'Verification email resent successfully',
       attemptsRemaining: 5 - user.emailVerificationAttempts,
-      nextAttemptAllowed: new Date(now.getTime() + 60 * 1000) // 1 minute cooldown
+      nextAttemptAllowed: new Date(now.getTime() + 60 * 1000), // 1 minute cooldown
+      verificationExpires: user.verificationTokenExpires
     });
 
   } catch (error) {
     console.error('Resend verification error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Failed to resend verification email'
+      message: 'Failed to resend verification email',
+      code: 'SERVER_ERROR',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
