@@ -391,7 +391,38 @@ app.get('/api/verify-email', async (req, res) => {
     }
 });
 
-// Phone Verification Endpoint
+// Send OTP endpoint
+app.post('/api/send-phone-verification', async (req, res) => {
+    try {
+        const { userId, phone } = req.body;
+        
+        // Generate 6-digit OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiration = new Date(Date.now() + 5 * 60000); // 5 minutes expiry
+        
+        // Save OTP to user in database
+        await User.findByIdAndUpdate(userId, {
+            otp,
+            otpExpiration
+        });
+
+        // In production: Actually send SMS using Twilio/other service
+        console.log(`OTP for ${phone}: ${otp}`); // For testing
+        
+        res.json({ 
+            success: true,
+            message: 'OTP sent successfully'
+        });
+
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Failed to send OTP'
+        });
+    }
+});
+
+// Verify OTP endpoint
 app.post('/api/verify-phone', async (req, res) => {
     try {
         const { userId, code } = req.body;
@@ -399,35 +430,33 @@ app.post('/api/verify-phone', async (req, res) => {
         const user = await User.findOne({
             _id: userId,
             otp: code,
-            otpExpiration: { $gt: Date.now() }
+            otpExpiration: { $gt: new Date() }
         });
 
         if (!user) {
-            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid or expired OTP'
+            });
         }
 
-        // Update phone verification status
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
-            { $set: { phoneVerified: true, otp: null, otpExpiration: null } },
-            { new: true }
-        );
+        // Mark phone as verified
+        await User.findByIdAndUpdate(userId, {
+            phoneVerified: true,
+            otp: null,
+            otpExpiration: null
+        });
 
-        const authToken = generateJWT(updatedUser);
-
-        res.json({
+        res.json({ 
             success: true,
-            message: 'Phone verified successfully',
-            token: authToken,
-            user: {
-                id: updatedUser._id,
-                emailVerified: true,
-                phoneVerified: true
-            }
+            message: 'Phone verified successfully'
         });
 
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
+        res.status(500).json({ 
+            success: false,
+            message: 'Verification failed'
+        });
     }
 });
 
