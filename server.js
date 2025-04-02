@@ -12,7 +12,7 @@ const axios = require('axios'); // For social login verification
 const app = express();
 
 // Middleware
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://jokercreation.store' }));
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://jokercreation.store/signup.html' }));
 app.use(bodyParser.json());
 
 // MongoDB connection setup
