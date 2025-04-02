@@ -363,30 +363,19 @@ app.get('/api/verify-email', async (req, res) => {
         
         // Verify token and update user
         const user = await User.findOneAndUpdate(
-            { verificationToken: token, verificationTokenExpires: { $gt: Date.now() } },
-            { $set: { emailVerified: true, verificationToken: null, verificationTokenExpires: null } },
+            { verificationToken: token },
+            { $set: { emailVerified: true, verificationToken: null } },
             { new: true }
         );
 
         if (!user) {
-            return res.status(400).json({ success: false, message: 'Invalid or expired token' });
+            return res.status(400).json({ success: false, message: 'Invalid token' });
         }
 
-        // Generate new JWT with updated status
-        const authToken = generateJWT(user);
-
-        res.json({
-            success: true,
-            message: 'Email verified successfully',
-            token: authToken,
-            user: {
-                id: user._id,
-                email: user.email,
-                phone: user.phone,
-                emailVerified: true,
-                phoneVerified: user.phoneVerified
-            }
-        });
+        // Redirect back to signup with verified email pre-filled
+        const redirectUrl = `${process.env.FRONTEND_URL}/signup.html?email=${encodeURIComponent(user.email)}&verified=true`;
+        
+        res.redirect(redirectUrl);
 
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error' });
