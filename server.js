@@ -141,7 +141,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date() });
 });
 
-// Google Sign-In Endpoint
+// Google Sign-In Endpoint (Signup)
 app.post('/api/signup/google', async (req, res) => {
   try {
     const { credential, userAgent } = req.body;
@@ -155,7 +155,6 @@ app.post('/api/signup/google', async (req, res) => {
       });
     }
 
-    // Verify the ID token
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -170,7 +169,6 @@ app.post('/api/signup/google', async (req, res) => {
       });
     }
 
-    // Find or create user
     let user = await User.findOneAndUpdate(
       { $or: [{ email: payload.email }, { googleId: payload.sub }] },
       {
@@ -190,7 +188,6 @@ app.post('/api/signup/google', async (req, res) => {
 
     const token = generateJWT(user);
 
-    // Send admin notification
     await sendEmail(
       process.env.ADMIN_EMAIL,
       'New Google Signup',
@@ -223,6 +220,81 @@ app.post('/api/signup/google', async (req, res) => {
   }
 });
 
+// Google Login Endpoint (NEW)
+app.post('/api/login/google', async (req, res) => {
+  try {
+    const { credential, userAgent } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    
+    if (!credential) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google credential is required'
+      });
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+
+    const user = await User.findOne({ 
+      $or: [
+        { email: payload.email.toLowerCase() },
+        { googleId: payload.sub }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No account found with this Google email'
+      });
+    }
+
+    // Update user login info
+    user.lastLogin = new Date();
+    user.ipAddress = ip;
+    user.location = location;
+    user.userAgent = userAgent;
+    await user.save();
+
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Google login error:', error);
+    
+    // Handle HTML responses from sleeping server
+    if (error.message.includes('Unexpected token')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Server is waking up. Please try again in 30 seconds.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Google login failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Email Signup Endpoint
 app.post('/api/signup', async (req, res) => {
   try {
@@ -231,7 +303,6 @@ app.post('/api/signup', async (req, res) => {
     const location = getLocationFromIp(ip);
     const userAgent = req.headers['user-agent'];
 
-    // Input validation
     if (!name || !email || !password) {
       return res.status(400).json({ 
         success: false,
@@ -239,7 +310,6 @@ app.post('/api/signup', async (req, res) => {
       });
     }
 
-    // Check existing user
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ 
@@ -248,7 +318,6 @@ app.post('/api/signup', async (req, res) => {
       });
     }
 
-    // Create new user
     const verificationToken = generateToken();
     const newUser = new User({
       name,
@@ -256,7 +325,7 @@ app.post('/api/signup', async (req, res) => {
       password: await bcrypt.hash(password, 12),
       phone,
       verificationToken,
-      verificationTokenExpires: Date.now() + 24 * 3600000, // 24 hours
+      verificationTokenExpires: Date.now() + 24 * 3600000,
       ipAddress: ip,
       location,
       userAgent
@@ -264,7 +333,6 @@ app.post('/api/signup', async (req, res) => {
 
     await newUser.save();
 
-    // Send verification email
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email.html?token=${verificationToken}`;
     await sendEmail(
       email,
@@ -282,7 +350,6 @@ app.post('/api/signup', async (req, res) => {
       </div>`
     );
 
-    // Admin notification
     await sendEmail(
       process.env.ADMIN_EMAIL,
       'New User Signup',
@@ -333,13 +400,11 @@ app.get('/api/verify-email', async (req, res) => {
       });
     }
 
-    // Mark email as verified
     user.emailVerified = true;
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
     await user.save();
 
-    // Generate JWT
     const authToken = generateJWT(user);
 
     res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${authToken}&userId=${user._id}`);
