@@ -13,7 +13,7 @@ const geoip = require('geoip-lite');
 
 // Validate environment variables
 const requiredEnvVars = [
-  'MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID',
+  'MONGODB_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL',
   'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL'
 ];
@@ -53,10 +53,47 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Database connection
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('MongoDB connected successfully'))
-  .catch(err => console.error('MongoDB connection error:', err));
+// Enhanced Database connection with error handling and retry logic
+const connectWithRetry = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
+      maxPoolSize: 10
+    });
+    console.log('MongoDB connected successfully');
+  } catch (err) {
+    console.error('MongoDB connection error:', err);
+    console.log('Retrying connection in 5 seconds...');
+    setTimeout(connectWithRetry, 5000);
+  }
+};
+
+// Connection events
+mongoose.connection.on('connected', () => {
+  console.log('Mongoose connected to DB');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('Mongoose disconnected from DB');
+  console.log('Attempting to reconnect...');
+  connectWithRetry();
+});
+
+// Initialize connection
+connectWithRetry();
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  await mongoose.connection.close();
+  console.log('Mongoose connection closed due to app termination');
+  process.exit(0);
+});
 
 // User Schema with password reset fields
 const userSchema = new mongoose.Schema({
@@ -181,13 +218,21 @@ const getLocationFromIp = (ip) => {
 
 // Routes
 
-// Health check endpoint
+// Health check endpoint with DB status
 app.get('/api/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState;
+  const statusMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting'
+  };
+  
   res.json({ 
     status: 'healthy', 
     timestamp: new Date(),
     services: {
-      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      database: statusMap[dbStatus] || 'unknown',
       email: transporter ? 'configured' : 'not configured'
     }
   });
@@ -234,4 +279,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
+  console.log(`MongoDB URI: ${process.env.MONGODB_URI ? 'configured' : 'not configured'}`);
 });
