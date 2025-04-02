@@ -26,8 +26,8 @@ requiredEnvVars.forEach(varName => {
 
 const app = express();
 
-// Configure trust proxy (important for Render.com and rate limiting)
-app.set('trust proxy', true);  // Add this line before other middleware
+// Configure trust proxy carefully (trust only Render's proxy)
+app.set('trust proxy', 1);
 
 // Middleware
 app.use(cors({
@@ -37,11 +37,18 @@ app.use(cors({
 app.use(express.json());
 app.use(requestIp.mw());
 
-// Rate limiting with proxy trust configuration
+// Secure rate limiting configuration
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
-  validate: { trustProxy: true }  // Add this to validate with proxy
+  validate: { 
+    trustProxy: false // Don't trust X-Forwarded-For for rate limiting
+  },
+  keyGenerator: (req) => {
+    // Use the direct connection IP for rate limiting
+    return req.socket.remoteAddress;
+  },
+  message: 'Too many requests from this IP, please try again later'
 });
 app.use(limiter);
 
