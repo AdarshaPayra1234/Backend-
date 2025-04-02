@@ -26,6 +26,9 @@ requiredEnvVars.forEach(varName => {
 
 const app = express();
 
+// Configure trust proxy (important for Render.com and rate limiting)
+app.set('trust proxy', true);  // Add this line before other middleware
+
 // Middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL,
@@ -34,10 +37,11 @@ app.use(cors({
 app.use(express.json());
 app.use(requestIp.mw());
 
-// Rate limiting
+// Rate limiting with proxy trust configuration
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100
+  max: 100,
+  validate: { trustProxy: true }  // Add this to validate with proxy
 });
 app.use(limiter);
 
@@ -298,7 +302,7 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Email Verification Endpoint (Fixed)
+// Email Verification Endpoint
 app.get('/api/verify-email', async (req, res) => {
   try {
     const { token: verificationToken } = req.query;
@@ -328,7 +332,7 @@ app.get('/api/verify-email', async (req, res) => {
     user.verificationTokenExpires = undefined;
     await user.save();
 
-    // Generate JWT (using authToken instead of token)
+    // Generate JWT
     const authToken = generateJWT(user);
 
     res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${authToken}&userId=${user._id}`);
