@@ -655,6 +655,27 @@ app.use((err, req, res, next) => {
 
 // Start Server
 const PORT = process.env.PORT || 3000;
+// Add this to your backend routes
+app.get('/api/verify-token', async (req, res) => {
+    try {
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ success: false, message: 'No token provided' });
+        }
+
+        jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+            if (err) {
+                return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+            }
+            res.json({ success: true, user });
+        });
+    } catch (error) {
+        console.error('Token verification error:', error);
+        res.status(500).json({ success: false, message: 'Server error during token verification' });
+    }
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`CORS configured for: ${process.env.FRONTEND_URL}`);
