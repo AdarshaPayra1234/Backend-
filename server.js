@@ -301,74 +301,58 @@ app.post('/api/signup', async (req, res) => {
 });
 
 // Login Endpoint
-app.post('/api/login', async (req, res) => {
-  try {
-    if (!req.body || typeof req.body !== 'object') {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid request body'
-      });
+// In your backend routes
+app.get('/api/verify-email', async (req, res) => {
+    try {
+        const { token } = req.query;
+        
+        if (!token) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Verification token is required'
+            });
+        }
+
+        const user = await User.findOne({ 
+            verificationToken: token,
+            verificationTokenExpires: { $gt: Date.now() }
+        });
+
+        if (!user) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid or expired verification token'
+            });
+        }
+
+        // Mark email as verified
+        user.emailVerified = true;
+        user.verificationToken = undefined;
+        user.verificationTokenExpires = undefined;
+        await user.save();
+
+        // Generate new JWT
+        const authToken = generateJWT(user);
+
+        res.json({ 
+            success: true,
+            message: 'Email verified successfully',
+            token: authToken,
+            requiresPhoneVerification: !user.phoneVerified,
+            user: {
+                id: user._id,
+                emailVerified: true,
+                phoneVerified: user.phoneVerified
+            }
+        });
+
+    } catch (error) {
+        console.error('Email verification error:', error);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error during email verification'
+        });
     }
-
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Email and password are required'
-      });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Invalid email or password'
-      });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Invalid email or password'
-      });
-    }
-
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        success: false,
-        message: 'Please verify your email address first',
-        requiresEmailVerification: true,
-        userId: user._id
-      });
-    }
-
-    user.lastLogin = new Date();
-    await user.save();
-
-    const token = generateJWT(user);
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        emailVerified: user.emailVerified,
-        phone: user.phone,
-        phoneVerified: user.phoneVerified
-      }
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during login'
-    });
-  }
 });
 
 // Email Verification Endpoint
