@@ -32,7 +32,9 @@ app.set('trust proxy', 1);
 // Middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL,
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 app.use(requestIp.mw());
@@ -220,7 +222,7 @@ app.post('/api/signup/google', async (req, res) => {
   }
 });
 
-// Google Login Endpoint (NEW)
+// Google Login Endpoint
 app.post('/api/login/google', async (req, res) => {
   try {
     const { credential, userAgent } = req.body;
@@ -376,7 +378,7 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Email Verification Endpoint
+// Email Verification Endpoint (Updated)
 app.get('/api/verify-email', async (req, res) => {
   try {
     const { token: verificationToken } = req.query;
@@ -400,6 +402,7 @@ app.get('/api/verify-email', async (req, res) => {
       });
     }
 
+    // Mark email as verified
     user.emailVerified = true;
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
@@ -407,10 +410,29 @@ app.get('/api/verify-email', async (req, res) => {
 
     const authToken = generateJWT(user);
 
+    // Return JSON response for API calls
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.json({
+        success: true,
+        message: 'Email verified successfully',
+        token: authToken,
+        userId: user._id
+      });
+    }
+
+    // Redirect for browser requests
     res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${authToken}&userId=${user._id}`);
 
   } catch (error) {
     console.error('Email verification error:', error);
+    
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.status(500).json({ 
+        success: false,
+        message: 'Email verification failed'
+      });
+    }
+    
     res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=false`);
   }
 });
