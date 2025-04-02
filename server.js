@@ -58,7 +58,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// Enhanced User Schema with bookings reference
+// User Schema with password reset fields
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -79,28 +79,52 @@ const userSchema = new mongoose.Schema({
     timezone: { type: String }
   },
   userAgent: { type: String },
-  lastLogin: { type: Date },
-  bookings: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Booking' }]
-}, { timestamps: true });
-
-// Booking Schema
-const bookingSchema = new mongoose.Schema({
-  bookingId: { type: String, required: true, unique: true },
-  customerName: { type: String, required: true },
-  customerEmail: { type: String, required: true },
-  customerPhone: { type: String, required: true },
-  package: { type: String, required: true },
-  bookingDate: { type: Date, required: true },
-  eventDate: { type: Date, required: true },
-  address: { type: String, required: true },
-  transactionId: { type: String, required: true },
-  amountPaid: { type: Number, required: true },
-  status: { type: String, enum: ['pending', 'confirmed', 'cancelled'], default: 'confirmed' },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  lastLogin: { type: Date }
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
+
+// Booking Schema (for reference only - actual booking should be in separate service)
+const bookingSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // ... other booking fields
+}, { timestamps: true });
+
 const Booking = mongoose.model('Booking', bookingSchema);
+
+// Token Verification Middleware (MOVED TO TOP)
+const authenticateUser = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(403).json({ 
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
+};
 
 // Google OAuth Client
 const googleClient = new OAuth2Client({
@@ -155,11 +179,6 @@ const getLocationFromIp = (ip) => {
   };
 };
 
-const generateBookingId = () => {
-  return 'JC-' + Date.now().toString(36).toUpperCase() + 
-         Math.random().toString(36).substr(2, 4).toUpperCase();
-};
-
 // Routes
 
 // Health check endpoint
@@ -174,15 +193,10 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Enhanced User Details Endpoint
+// User Details Endpoint (simplified - no booking details)
 app.get('/api/user-details', authenticateUser, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id)
-      .populate({
-        path: 'bookings',
-        select: 'bookingId package bookingDate eventDate status amountPaid',
-        options: { sort: { createdAt: -1 } }
-      });
+    const user = await User.findById(req.user.id);
 
     if (!user) {
       return res.status(404).json({ 
@@ -199,7 +213,6 @@ app.get('/api/user-details', authenticateUser, async (req, res) => {
         email: user.email,
         phone: user.phone,
         emailVerified: user.emailVerified,
-        bookings: user.bookings,
         createdAt: user.createdAt
       }
     });
@@ -212,180 +225,9 @@ app.get('/api/user-details', authenticateUser, async (req, res) => {
   }
 });
 
-// Get User Bookings
-app.get('/api/user-bookings', authenticateUser, async (req, res) => {
-  try {
-    const bookings = await Booking.find({ userId: req.user.id })
-      .sort({ createdAt: -1 })
-      .select('bookingId package bookingDate eventDate status amountPaid transactionId');
-
-    res.json({
-      success: true,
-      bookings
-    });
-  } catch (error) {
-    console.error('Error fetching user bookings:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to fetch bookings'
-    });
-  }
-});
-
-// Save Booking (integrated with user account)
-app.post('/api/save-booking', authenticateUser, async (req, res) => {
-  try {
-    const {
-      customerName,
-      customerEmail,
-      customerPhone,
-      package,
-      bookingDate,
-      eventDate,
-      address,
-      transactionId,
-      amountPaid
-    } = req.body;
-
-    const bookingId = generateBookingId();
-
-    const newBooking = new Booking({
-      bookingId,
-      customerName,
-      customerEmail,
-      customerPhone,
-      package,
-      bookingDate,
-      eventDate,
-      address,
-      transactionId,
-      amountPaid,
-      userId: req.user.id
-    });
-
-    const savedBooking = await newBooking.save();
-
-    // Add booking to user's bookings array
-    await User.findByIdAndUpdate(req.user.id, {
-      $push: { bookings: savedBooking._id }
-    });
-
-    // Send confirmation email
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: customerEmail,
-      subject: 'Booking Confirmation - Joker Creation Studio',
-      html: generateBookingConfirmationEmail(savedBooking)
-    };
-
-    await transporter.sendMail(mailOptions);
-
-    res.json({
-      success: true,
-      message: 'Booking saved successfully',
-      booking: {
-        id: savedBooking._id,
-        bookingId: savedBooking.bookingId,
-        package: savedBooking.package,
-        bookingDate: savedBooking.bookingDate,
-        eventDate: savedBooking.eventDate,
-        status: savedBooking.status
-      }
-    });
-
-  } catch (error) {
-    console.error('Error saving booking:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to save booking'
-    });
-  }
-});
-
-function generateBookingConfirmationEmail(booking) {
-  return `
-    <div style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px;">
-      <div style="max-width: 600px; margin: auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);">
-        <h2 style="color: #2c3e50; text-align: center;">Booking Confirmation</h2>
-        <p style="font-size: 16px; color: #34495e;">Hello ${booking.customerName},</p>
-        <p style="font-size: 16px; color: #34495e;">Thank you for booking with Joker Creation Studio! Here are your booking details:</p>
-        
-        <table style="width: 100%; margin-top: 20px; border-collapse: collapse;">
-          <tr style="background-color: #ecf0f1;">
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Booking ID</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e;">${booking.bookingId}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Package</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e;">${booking.package}</td>
-          </tr>
-          <tr style="background-color: #ecf0f1;">
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Booking Date</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e;">${new Date(booking.bookingDate).toLocaleDateString()}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Event Date</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e;">${new Date(booking.eventDate).toLocaleDateString()}</td>
-          </tr>
-          <tr style="background-color: #ecf0f1;">
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Amount Paid</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e;">₹${booking.amountPaid}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px; font-size: 14px; font-weight: bold; color: #2c3e50;">Status</td>
-            <td style="padding: 10px; font-size: 14px; color: #34495e; text-transform: capitalize;">${booking.status}</td>
-          </tr>
-        </table>
-
-        <p style="font-size: 16px; color: #34495e; margin-top: 20px;">
-          You can view and manage your booking in your <a href="${process.env.FRONTEND_URL}/account.html" style="color: #2980b9;">account page</a>.
-        </p>
-
-        <p style="font-size: 16px; color: #34495e; text-align: center; margin-top: 30px;">
-          Regards, <br><strong>Joker Creation Studio</strong>
-        </p>
-      </div>
-    </div>
-  `;
-}
-
 // [All your existing authentication routes remain unchanged...]
 // Password Reset, Google Auth, Email Login/Signup etc.
 // ...
-
-// Token Verification Middleware
-const authenticateUser = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authorization token required'
-      });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
-
-    if (!user) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('Authentication error:', error);
-    res.status(403).json({ 
-      success: false,
-      message: 'Invalid or expired token'
-    });
-  }
-};
 
 // Start Server
 const PORT = process.env.PORT || 3000;
