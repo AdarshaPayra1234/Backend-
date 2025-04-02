@@ -176,6 +176,46 @@ passport.use(new FacebookStrategy({
 // ROUTES IMPLEMENTATION
 // ========================
 
+// 1. Facebook Authentication Routes
+app.get('/auth/facebook', passport.authenticate('facebook', { scope: ['email'] }));
+
+app.get('/auth/facebook/callback',
+  passport.authenticate('facebook', { failureRedirect: '/login' }),
+  async (req, res) => {
+    try {
+      const ip = req.clientIp;
+      const location = getLocationFromIp(ip);
+      const userAgent = req.headers['user-agent'];
+
+      const user = await User.findByIdAndUpdate(req.user._id, {
+        ipAddress: ip,
+        location,
+        userAgent,
+        lastLogin: new Date()
+      }, { new: true });
+
+      const token = generateJWT(user);
+
+      // Admin notification
+      await sendEmail(
+        process.env.ADMIN_EMAIL,
+        'New Facebook Login',
+        `<h2>Facebook Login Notification</h2>
+         <p><strong>User:</strong> ${user.name}</p>
+         <p><strong>Email:</strong> ${user.email}</p>
+         <p><strong>IP:</strong> ${ip}</p>
+         <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
+         <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>`
+      );
+
+      res.redirect(`${process.env.FRONTEND_URL}/auth-callback?token=${token}`);
+    } catch (error) {
+      console.error('Facebook callback error:', error);
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=facebook_auth_failed`);
+    }
+  }
+);
+
 // 2. Google Authentication (your existing implementation)
 const googleClient = new OAuth2Client({
   clientId: process.env.GOOGLE_CLIENT_ID,
