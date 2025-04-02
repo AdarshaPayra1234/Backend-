@@ -141,25 +141,26 @@ app.post('/api/signup/google', async (req, res) => {
     const { credential } = req.body;
     
     if (!credential) {
-      return res.status(400).json({ message: 'No credential provided' });
+      return res.status(400).json({ 
+        message: 'No credential provided',
+        receivedBody: req.body // For debugging
+      });
     }
 
-    // Verify the token using Google's library
-    const ticket = await googleClient.verifyIdToken({
+    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+    const ticket = await client.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID
     });
 
     const payload = ticket.getPayload();
+    console.log('Google payload:', payload);
 
-    if (!payload.email || !payload.email_verified) {
+    if (!payload.email_verified) {
       return res.status(400).json({ message: 'Google email not verified' });
     }
 
-    if (!payload.aud.includes(process.env.GOOGLE_CLIENT_ID)) {
-      return res.status(400).json({ message: 'Invalid token audience' });
-    }
-
+    // Check if user exists
     let user = await User.findOne({ 
       $or: [
         { email: payload.email.toLowerCase() },
@@ -168,6 +169,7 @@ app.post('/api/signup/google', async (req, res) => {
     });
 
     if (!user) {
+      // Create new user
       user = new User({
         name: payload.name,
         email: payload.email.toLowerCase(),
@@ -177,9 +179,11 @@ app.post('/api/signup/google', async (req, res) => {
       await user.save();
     }
 
+    // Update last login
     user.lastLogin = Date.now();
     await user.save();
 
+    // Generate JWT
     const token = generateJWT(user);
 
     res.status(200).json({
@@ -197,10 +201,11 @@ app.post('/api/signup/google', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Google login error:', error);
+    console.error('Google auth error:', error);
     res.status(500).json({ 
       message: 'Failed to authenticate with Google',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
