@@ -4,23 +4,18 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
-const passport = require('passport');
-const FacebookStrategy = require('passport-facebook').Strategy;
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 const requestIp = require('request-ip');
 const geoip = require('geoip-lite');
-const session = require('express-session');
 
-// Validate ALL required environment variables
+// Validate environment variables
 const requiredEnvVars = [
-  'MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 
-  'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL', 
-  'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL',
-  'FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET',
-  'SESSION_SECRET', 'BACKEND_URL'
+  'MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL',
+  'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL'
 ];
 
 requiredEnvVars.forEach(varName => {
@@ -31,37 +26,27 @@ requiredEnvVars.forEach(varName => {
 
 const app = express();
 
-// Middleware Setup
+// Middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL,
   credentials: true
 }));
 app.use(express.json());
 app.use(requestIp.mw());
-app.use(session({
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: true,
-  cookie: { secure: process.env.NODE_ENV === 'production' }
-}));
 
-// Initialize Passport
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Rate Limiting
+// Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100
 });
 app.use(limiter);
 
-// Database Connection
+// Database connection
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// User Schema (with ALL your required fields)
+// User Schema
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -85,7 +70,13 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
-// Email Configuration (using your Gmail)
+// Google OAuth Client
+const googleClient = new OAuth2Client({
+  clientId: process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET
+});
+
+// Email configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -94,7 +85,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Helper Functions
+// Helper functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
 
 const generateJWT = (user) => {
@@ -132,102 +123,28 @@ const getLocationFromIp = (ip) => {
   };
 };
 
-// ========================
-// PASSPORT CONFIGURATION
-// ========================
+// Routes
 
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
-  try {
-    const user = await User.findById(id);
-    done(null, user);
-  } catch (err) {
-    done(err, null);
-  }
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date() });
 });
 
-// Facebook Strategy
-passport.use(new FacebookStrategy({
-  clientID: process.env.FACEBOOK_APP_ID,
-  clientSecret: process.env.FACEBOOK_APP_SECRET,
-  callbackURL: `${process.env.BACKEND_URL}/auth/facebook/callback`,
-  profileFields: ['id', 'emails', 'name', 'displayName']
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ facebookId: profile.id });
-    
-    if (!user) {
-      user = new User({
-        name: profile.displayName,
-        email: profile.emails?.[0]?.value || `${profile.id}@facebook.com`,
-        facebookId: profile.id,
-        emailVerified: true
-      });
-      await user.save();
-    }
-    
-    return done(null, user);
-  } catch (error) {
-    return done(error, null);
-  }
-}));
-
-// ========================
-// ROUTES IMPLEMENTATION
-// ========================
-
-// 1. Facebook Authentication Routes
-app.get('/auth/facebook', passport.authenticate('facebook', { scope: ['email'] }));
-
-app.get('/auth/facebook/callback',
-  passport.authenticate('facebook', { failureRedirect: '/login' }),
-  async (req, res) => {
-    try {
-      const ip = req.clientIp;
-      const location = getLocationFromIp(ip);
-      const userAgent = req.headers['user-agent'];
-
-      const user = await User.findByIdAndUpdate(req.user._id, {
-        ipAddress: ip,
-        location,
-        userAgent,
-        lastLogin: new Date()
-      }, { new: true });
-
-      const token = generateJWT(user);
-
-      // Admin notification
-      await sendEmail(
-        process.env.ADMIN_EMAIL,
-        'New Facebook Login',
-        `<h2>Facebook Login Notification</h2>
-         <p><strong>User:</strong> ${user.name}</p>
-         <p><strong>Email:</strong> ${user.email}</p>
-         <p><strong>IP:</strong> ${ip}</p>
-         <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
-         <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>`
-      );
-
-      res.redirect(`${process.env.FRONTEND_URL}/auth-callback?token=${token}`);
-    } catch (error) {
-      console.error('Facebook callback error:', error);
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=facebook_auth_failed`);
-    }
-  }
-);
-
-// 2. Google Authentication (your existing implementation)
-const googleClient = new OAuth2Client({
-  clientId: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET
-});
-
+// Google Sign-In Endpoint
 app.post('/api/signup/google', async (req, res) => {
   try {
     const { credential, userAgent } = req.body;
     const ip = req.clientIp;
     const location = getLocationFromIp(ip);
+    
+    if (!credential) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google credential is required'
+      });
+    }
 
+    // Verify the ID token
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -235,6 +152,14 @@ app.post('/api/signup/google', async (req, res) => {
 
     const payload = ticket.getPayload();
 
+    if (!payload.email_verified) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google email not verified'
+      });
+    }
+
+    // Find or create user
     let user = await User.findOneAndUpdate(
       { $or: [{ email: payload.email }, { googleId: payload.sub }] },
       {
@@ -254,16 +179,15 @@ app.post('/api/signup/google', async (req, res) => {
 
     const token = generateJWT(user);
 
-    // Admin notification
+    // Send admin notification
     await sendEmail(
       process.env.ADMIN_EMAIL,
       'New Google Signup',
-      `<h2>Google Signup Notification</h2>
-       <p><strong>User:</strong> ${user.name}</p>
+      `<h2>New Google Signup</h2>
+       <p><strong>Name:</strong> ${user.name}</p>
        <p><strong>Email:</strong> ${user.email}</p>
        <p><strong>IP:</strong> ${ip}</p>
-       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
-       <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>`
+       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>`
     );
 
     res.json({
@@ -277,48 +201,18 @@ app.post('/api/signup/google', async (req, res) => {
         phone: user.phone
       }
     });
+
   } catch (error) {
     console.error('Google auth error:', error);
     res.status(500).json({
       success: false,
-      message: 'Google authentication failed'
+      message: 'Google authentication failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// 3. Email Verification (using your exact URL)
-app.get('/api/verify-email', async (req, res) => {
-  try {
-    const { token } = req.query;
-    
-    const user = await User.findOne({ 
-      verificationToken: token,
-      verificationTokenExpires: { $gt: Date.now() }
-    });
-
-    if (!user) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid or expired verification token'
-      });
-    }
-
-    user.emailVerified = true;
-    user.verificationToken = undefined;
-    user.verificationTokenExpires = undefined;
-    await user.save();
-
-    const authToken = generateJWT(user);
-
-    // Redirect to your specific verification page
-    res.redirect(`https://jokercreation.store/verify-email.html?token=${authToken}&success=true`);
-  } catch (error) {
-    console.error('Email verification error:', error);
-    res.redirect('https://jokercreation.store/verify-email.html?success=false');
-  }
-});
-
-// 4. Regular Email Signup (with phone number)
+// Email Signup Endpoint
 app.post('/api/signup', async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -359,8 +253,8 @@ app.post('/api/signup', async (req, res) => {
 
     await newUser.save();
 
-    // Send verification email with YOUR SPECIFIC URL
-    const verificationUrl = `https://jokercreation.store/verify-email.html?token=${verificationToken}`;
+    // Send verification email
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email.html?token=${verificationToken}`;
     await sendEmail(
       email,
       'Verify Your Email - Joker Creation Studio',
@@ -381,13 +275,12 @@ app.post('/api/signup', async (req, res) => {
     await sendEmail(
       process.env.ADMIN_EMAIL,
       'New User Signup',
-      `<h2>New User Signup Notification</h2>
+      `<h2>New User Signup</h2>
        <p><strong>Name:</strong> ${name}</p>
        <p><strong>Email:</strong> ${email}</p>
        <p><strong>Phone:</strong> ${phone || 'Not provided'}</p>
        <p><strong>IP:</strong> ${ip}</p>
-       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
-       <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>`
+       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>`
     );
 
     res.status(201).json({ 
@@ -395,6 +288,7 @@ app.post('/api/signup', async (req, res) => {
       message: 'Registration successful. Please check your email for verification.',
       userId: newUser._id
     });
+
   } catch (error) {
     console.error('Signup error:', error);
     res.status(500).json({ 
@@ -404,11 +298,98 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Add other routes (login, profile, etc.) as needed...
+// Email Verification Endpoint
+app.get('/api/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    
+    if (!token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
 
+    const user = await User.findOne({ 
+      verificationToken: token,
+      verificationTokenExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification token'
+      });
+    }
+
+    // Mark email as verified
+    user.emailVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+    await user.save();
+
+    // Generate JWT
+    const token = generateJWT(user);
+
+    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${token}&userId=${user._id}`);
+
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=false`);
+  }
+});
+
+// Token Verification Middleware
+const authenticateUser = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(403).json({ 
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
+};
+
+// Protected Route Example
+app.get('/api/user', authenticateUser, (req, res) => {
+  res.json({
+    success: true,
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      emailVerified: req.user.emailVerified,
+      phone: req.user.phone
+    }
+  });
+});
+
+// Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Frontend: ${process.env.FRONTEND_URL}`);
-  console.log(`Backend: ${process.env.BACKEND_URL}`);
+  console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
