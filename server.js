@@ -8,9 +8,11 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
+const requestIp = require('request-ip');
+const geoip = require('geoip-lite');
 
 // Validate critical environment variables
-const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL', 'EMAIL_USER', 'EMAIL_PASS'];
+const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL', 'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL'];
 requiredEnvVars.forEach(varName => {
   if (!process.env[varName]) {
     throw new Error(`Missing required environment variable: ${varName}`);
@@ -31,9 +33,10 @@ app.use(cors({
   credentials: true
 }));
 
-// Middleware to parse JSON bodies
+// Middleware to parse JSON bodies and get client IP
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(requestIp.mw());
 
 // Rate limiting for verification endpoints
 const verificationLimiter = rateLimit({
@@ -52,7 +55,7 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log('MongoDB connected successfully'))
 .catch(err => console.error('MongoDB connection error:', err));
 
-// Enhanced User Schema with verification tracking
+// Enhanced User Schema with location tracking
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -60,23 +63,26 @@ const userSchema = new mongoose.Schema({
   googleId: { type: String },
   phone: { type: String },
   emailVerified: { type: Boolean, default: false },
-  phoneVerified: { type: Boolean, default: false },
   verificationToken: { type: String },
   verificationTokenExpires: { type: Date },
-  otp: { type: String },
-  otpExpiration: { type: Date },
   emailVerificationAttempts: { type: Number, default: 0 },
   lastEmailVerificationAttempt: { type: Date },
-  phoneVerificationAttempts: { type: Number, default: 0 },
-  lastPhoneVerificationAttempt: { type: Date },
-  lastLogin: { type: Date, default: Date.now }
+  lastLogin: { type: Date, default: Date.now },
+  ipAddress: { type: String },
+  location: {
+    country: { type: String },
+    region: { type: String },
+    city: { type: String },
+    ll: { type: [Number] }, // latitude/longitude
+    timezone: { type: String }
+  },
+  userAgent: { type: String }
 }, { timestamps: true });
 
 // Add indexes for better performance
 userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ googleId: 1 });
 userSchema.index({ verificationToken: 1 });
-userSchema.index({ otp: 1 });
 
 const User = mongoose.model('User', userSchema);
 
@@ -97,7 +103,6 @@ const transporter = nodemailer.createTransport({
 
 // Helper Functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 const generateJWT = (user) => {
   return jwt.sign(
@@ -105,7 +110,6 @@ const generateJWT = (user) => {
       userId: user._id,
       email: user.email,
       emailVerified: user.emailVerified,
-      phoneVerified: user.phoneVerified,
       iss: 'jokercreation-store-api',
       aud: 'jokercreation-store-client'
     },
@@ -116,7 +120,7 @@ const generateJWT = (user) => {
 
 // Enhanced Send Verification Email with HTML template
 const sendVerificationEmail = async (email, name, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email.html?token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
   
   const mailOptions = {
     from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
@@ -145,11 +149,31 @@ const sendVerificationEmail = async (email, name, token) => {
   await transporter.sendMail(mailOptions);
 };
 
-// Enhanced SMS Verification (Mock - Replace with actual SMS service)
-const sendSmsVerification = async (phone, code) => {
-  console.log(`SMS verification code ${code} sent to ${phone}`);
-  // In production, integrate with SMS service like Twilio
-  return true;
+// Send notification email to admin
+const sendAdminNotification = async (subject, htmlContent) => {
+  const mailOptions = {
+    from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+    to: process.env.ADMIN_EMAIL,
+    subject: subject,
+    html: htmlContent
+  };
+
+  await transporter.sendMail(mailOptions);
+};
+
+// Get location from IP
+const getLocationFromIp = (ip) => {
+  // For local testing, use a default IP if localhost
+  const testIp = ip === '::1' || ip === '127.0.0.1' ? '8.8.8.8' : ip;
+  const geo = geoip.lookup(testIp);
+  
+  return geo ? {
+    country: geo.country,
+    region: geo.region,
+    city: geo.city,
+    ll: geo.ll,
+    timezone: geo.timezone
+  } : null;
 };
 
 // Routes
@@ -166,7 +190,8 @@ app.get('/api/health', (req, res) => {
 // Google Sign-In Endpoint
 app.post('/api/signup/google', async (req, res) => {
   try {
-    const { credential } = req.body;
+    const { credential, userAgent } = req.body;
+    const clientIp = req.clientIp;
     
     if (!credential) {
       return res.status(400).json({ 
@@ -181,6 +206,7 @@ app.post('/api/signup/google', async (req, res) => {
     });
 
     const payload = ticket.getPayload();
+    const location = getLocationFromIp(clientIp);
 
     if (!payload.email_verified) {
       return res.status(400).json({ 
@@ -197,13 +223,28 @@ app.post('/api/signup/google', async (req, res) => {
           email: payload.email.toLowerCase(),
           googleId: payload.sub,
           emailVerified: true,
-          lastLogin: new Date()
+          lastLogin: new Date(),
+          ipAddress: clientIp,
+          location: location,
+          userAgent: userAgent
         }
       },
       { upsert: true, new: true }
     );
 
     const token = generateJWT(user);
+
+    // Send notification to admin
+    const signupHtml = `
+      <h2>New Google Signup</h2>
+      <p><strong>Name:</strong> ${user.name}</p>
+      <p><strong>Email:</strong> ${user.email}</p>
+      <p><strong>IP Address:</strong> ${clientIp}</p>
+      <p><strong>Location:</strong> ${location ? `${location.city}, ${location.region}, ${location.country}` : 'Unknown'}</p>
+      <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+      <p><strong>User Agent:</strong> ${userAgent}</p>
+    `;
+    await sendAdminNotification('New Google Signup', signupHtml);
 
     res.json({
       success: true,
@@ -213,8 +254,7 @@ app.post('/api/signup/google', async (req, res) => {
         name: user.name,
         email: user.email,
         emailVerified: user.emailVerified,
-        phone: user.phone,
-        phoneVerified: user.phoneVerified
+        phone: user.phone
       }
     });
 
@@ -231,7 +271,9 @@ app.post('/api/signup/google', async (req, res) => {
 // Regular Email Signup
 app.post('/api/signup', async (req, res) => {
   try {
-    const { name, email, password, phone } = req.body;
+    const { name, email, password, phone, userAgent } = req.body;
+    const clientIp = req.clientIp;
+    const location = getLocationFromIp(clientIp);
     
     if (!name || !email || !password) {
       return res.status(400).json({ 
@@ -277,11 +319,27 @@ app.post('/api/signup', async (req, res) => {
       verificationToken,
       verificationTokenExpires: Date.now() + 24 * 3600000,
       emailVerificationAttempts: 1,
-      lastEmailVerificationAttempt: new Date()
+      lastEmailVerificationAttempt: new Date(),
+      ipAddress: clientIp,
+      location: location,
+      userAgent: userAgent
     });
 
     await newUser.save();
     await sendVerificationEmail(email, name, verificationToken);
+
+    // Send notification to admin
+    const signupHtml = `
+      <h2>New User Signup</h2>
+      <p><strong>Name:</strong> ${name}</p>
+      <p><strong>Email:</strong> ${email}</p>
+      <p><strong>Phone:</strong> ${phone || 'Not provided'}</p>
+      <p><strong>IP Address:</strong> ${clientIp}</p>
+      <p><strong>Location:</strong> ${location ? `${location.city}, ${location.region}, ${location.country}` : 'Unknown'}</p>
+      <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+      <p><strong>User Agent:</strong> ${userAgent}</p>
+    `;
+    await sendAdminNotification('New User Signup', signupHtml);
 
     res.status(201).json({ 
       success: true,
@@ -301,163 +359,136 @@ app.post('/api/signup', async (req, res) => {
 });
 
 // Login Endpoint
-// In your backend routes
-app.get('/api/verify-email', async (req, res) => {
-    try {
-        const { token } = req.query;
-        
-        if (!token) {
-            return res.status(400).json({ 
-                success: false,
-                message: 'Verification token is required'
-            });
-        }
-
-        const user = await User.findOne({ 
-            verificationToken: token,
-            verificationTokenExpires: { $gt: Date.now() }
-        });
-
-        if (!user) {
-            return res.status(400).json({ 
-                success: false,
-                message: 'Invalid or expired verification token'
-            });
-        }
-
-        // Mark email as verified
-        user.emailVerified = true;
-        user.verificationToken = undefined;
-        user.verificationTokenExpires = undefined;
-        await user.save();
-
-        // Generate new JWT
-        const authToken = generateJWT(user);
-
-        res.json({ 
-            success: true,
-            message: 'Email verified successfully',
-            token: authToken,
-            requiresPhoneVerification: !user.phoneVerified,
-            user: {
-                id: user._id,
-                emailVerified: true,
-                phoneVerified: user.phoneVerified
-            }
-        });
-
-    } catch (error) {
-        console.error('Email verification error:', error);
-        res.status(500).json({ 
-            success: false,
-            message: 'Server error during email verification'
-        });
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password, userAgent } = req.body;
+    const clientIp = req.clientIp;
+    const location = getLocationFromIp(clientIp);
+    
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required'
+      });
     }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+
+    if (!user.password) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Please use Google Sign-In or reset your password'
+      });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+
+    // Update user with login info
+    user.lastLogin = new Date();
+    user.ipAddress = clientIp;
+    user.location = location;
+    user.userAgent = userAgent;
+    await user.save();
+
+    const token = generateJWT(user);
+
+    // Send login notification to admin
+    const loginHtml = `
+      <h2>User Login</h2>
+      <p><strong>Name:</strong> ${user.name}</p>
+      <p><strong>Email:</strong> ${user.email}</p>
+      <p><strong>Phone:</strong> ${user.phone || 'Not provided'}</p>
+      <p><strong>IP Address:</strong> ${clientIp}</p>
+      <p><strong>Location:</strong> ${location ? `${location.city}, ${location.region}, ${location.country}` : 'Unknown'}</p>
+      <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+      <p><strong>User Agent:</strong> ${userAgent}</p>
+    `;
+    await sendAdminNotification('User Login Notification', loginHtml);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during login'
+    });
+  }
 });
 
 // Email Verification Endpoint
-// Email Verification Endpoint
-// In your backend (app.js)
 app.get('/api/verify-email', async (req, res) => {
-    try {
-        const { token } = req.query;
-        
-        // Verify token and update user
-        const user = await User.findOneAndUpdate(
-            { verificationToken: token },
-            { $set: { emailVerified: true, verificationToken: null } },
-            { new: true }
-        );
-
-        if (!user) {
-            return res.status(400).json({ success: false, message: 'Invalid token' });
-        }
-
-        // Return user data including phone number
-        res.json({
-            success: true,
-            message: 'Email verified successfully',
-            user: {
-                id: user._id,
-                email: user.email,
-                phone: user.phone,
-                emailVerified: true,
-                phoneVerified: user.phoneVerified
-            }
-        });
-
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
+  try {
+    const { token } = req.query;
+    
+    if (!token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Verification token is required'
+      });
     }
-});
 
-// Send OTP endpoint
-app.post('/api/send-phone-verification', async (req, res) => {
-    try {
-        const { userId, phone } = req.body;
-        
-        // Generate 6-digit OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const otpExpiration = new Date(Date.now() + 5 * 60000); // 5 minutes expiry
-        
-        // Save OTP to user in database
-        await User.findByIdAndUpdate(userId, {
-            otp,
-            otpExpiration
-        });
+    const user = await User.findOne({ 
+      verificationToken: token,
+      verificationTokenExpires: { $gt: Date.now() }
+    });
 
-        // In production: Actually send SMS using Twilio/other service
-        console.log(`OTP for ${phone}: ${otp}`); // For testing
-        
-        res.json({ 
-            success: true,
-            message: 'OTP sent successfully'
-        });
-
-    } catch (error) {
-        res.status(500).json({ 
-            success: false,
-            message: 'Failed to send OTP'
-        });
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification token'
+      });
     }
-});
 
-// Verify OTP endpoint
-app.post('/api/verify-phone', async (req, res) => {
-    try {
-        const { userId, code } = req.body;
-        
-        const user = await User.findOne({
-            _id: userId,
-            otp: code,
-            otpExpiration: { $gt: new Date() }
-        });
+    // Mark email as verified
+    user.emailVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+    await user.save();
 
-        if (!user) {
-            return res.status(400).json({ 
-                success: false,
-                message: 'Invalid or expired OTP'
-            });
-        }
+    // Generate new JWT
+    const authToken = generateJWT(user);
 
-        // Mark phone as verified
-        await User.findByIdAndUpdate(userId, {
-            phoneVerified: true,
-            otp: null,
-            otpExpiration: null
-        });
+    res.json({ 
+      success: true,
+      message: 'Email verified successfully',
+      token: authToken,
+      user: {
+        id: user._id,
+        emailVerified: true,
+        phone: user.phone
+      }
+    });
 
-        res.json({ 
-            success: true,
-            message: 'Phone verified successfully'
-        });
-
-    } catch (error) {
-        res.status(500).json({ 
-            success: false,
-            message: 'Verification failed'
-        });
-    }
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during email verification'
+    });
+  }
 });
 
 // Resend Verification Email with Limits
@@ -562,134 +593,25 @@ app.post('/api/resend-verification', verificationLimiter, async (req, res) => {
   }
 });
 
-// Send Phone Verification with Limits
-app.post('/api/send-phone-verification', verificationLimiter, async (req, res) => {
+// Token Verification Endpoint
+app.get('/api/verify-token', async (req, res) => {
   try {
-    const { userId, phone } = req.body;
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
     
-    if (!userId || !phone) {
-      return res.status(400).json({
-        success: false,
-        message: 'User ID and phone number are required'
-      });
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'No token provided' });
     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    // Check phone attempt limits (3 per day)
-    const now = new Date();
-    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    
-    if (user.lastPhoneVerificationAttempt > oneDayAgo && 
-        user.phoneVerificationAttempts >= 3) {
-      return res.status(429).json({ 
-        success: false,
-        message: 'Phone verification limit reached (3 per day)',
-        nextAttemptAllowed: new Date(user.lastPhoneVerificationAttempt.getTime() + 24 * 60 * 60 * 1000)
-      });
-    }
-
-    // Check 1-minute cooldown between attempts
-    const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
-    if (user.lastPhoneVerificationAttempt > oneMinuteAgo) {
-      return res.status(429).json({ 
-        success: false,
-        message: 'Please wait 1 minute before requesting another verification code',
-        nextAttemptAllowed: new Date(user.lastPhoneVerificationAttempt.getTime() + 60 * 1000)
-      });
-    }
-
-    const otp = generateOTP();
-    user.otp = otp;
-    user.otpExpiration = Date.now() + 3600000; // 1 hour expiration
-    
-    // Update attempt tracking
-    if (user.lastPhoneVerificationAttempt <= oneDayAgo) {
-      user.phoneVerificationAttempts = 1;
-    } else {
-      user.phoneVerificationAttempts += 1;
-    }
-    user.lastPhoneVerificationAttempt = now;
-    
-    await user.save();
-    await sendSmsVerification(phone, otp);
-
-    res.json({ 
-      success: true,
-      message: 'Verification code sent to your phone',
-      attemptsRemaining: 3 - user.phoneVerificationAttempts,
-      nextAttemptAllowed: new Date(now.getTime() + 60 * 1000) // 1 minute cooldown
-    });
-
-  } catch (error) {
-    console.error('Phone verification error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to send verification code'
-    });
-  }
-});
-
-// Verify Phone OTP
-app.post('/api/verify-phone', verificationLimiter, async (req, res) => {
-  try {
-    const { userId, code } = req.body;
-    
-    if (!userId || !code) {
-      return res.status(400).json({
-        success: false,
-        message: 'User ID and verification code are required'
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    if (!user.otp || user.otp !== code || Date.now() > user.otpExpiration) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid or expired verification code'
-      });
-    }
-
-    user.phoneVerified = true;
-    user.otp = undefined;
-    user.otpExpiration = undefined;
-    await user.save();
-
-    const token = generateJWT(user);
-
-    res.json({
-      success: true,
-      token,
-      message: 'Phone number verified successfully',
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        emailVerified: user.emailVerified,
-        phone: user.phone,
-        phoneVerified: user.phoneVerified
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.status(403).json({ success: false, message: 'Invalid or expired token' });
       }
+      res.json({ success: true, user });
     });
-
   } catch (error) {
-    console.error('Phone verification error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during phone verification'
-    });
+    console.error('Token verification error:', error);
+    res.status(500).json({ success: false, message: 'Server error during token verification' });
   }
 });
 
@@ -705,27 +627,6 @@ app.use((err, req, res, next) => {
 
 // Start Server
 const PORT = process.env.PORT || 3000;
-// Add this to your backend routes
-app.get('/api/verify-token', async (req, res) => {
-    try {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
-        
-        if (!token) {
-            return res.status(401).json({ success: false, message: 'No token provided' });
-        }
-
-        jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-            if (err) {
-                return res.status(403).json({ success: false, message: 'Invalid or expired token' });
-            }
-            res.json({ success: true, user });
-        });
-    } catch (error) {
-        console.error('Token verification error:', error);
-        res.status(500).json({ success: false, message: 'Server error during token verification' });
-    }
-});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`CORS configured for: ${process.env.FRONTEND_URL}`);
