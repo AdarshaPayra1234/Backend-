@@ -298,12 +298,12 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Email Verification Endpoint
+// Email Verification Endpoint (Fixed)
 app.get('/api/verify-email', async (req, res) => {
   try {
-    const { token } = req.query;
+    const { token: verificationToken } = req.query;
     
-    if (!token) {
+    if (!verificationToken) {
       return res.status(400).json({ 
         success: false,
         message: 'Verification token is required'
@@ -311,7 +311,7 @@ app.get('/api/verify-email', async (req, res) => {
     }
 
     const user = await User.findOne({ 
-      verificationToken: token,
+      verificationToken: verificationToken,
       verificationTokenExpires: { $gt: Date.now() }
     });
 
@@ -328,10 +328,10 @@ app.get('/api/verify-email', async (req, res) => {
     user.verificationTokenExpires = undefined;
     await user.save();
 
-    // Generate JWT
-    const token = generateJWT(user);
+    // Generate JWT (using authToken instead of token)
+    const authToken = generateJWT(user);
 
-    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${token}&userId=${user._id}`);
+    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${authToken}&userId=${user._id}`);
 
   } catch (error) {
     console.error('Email verification error:', error);
