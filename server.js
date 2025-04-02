@@ -7,9 +7,10 @@ const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const rateLimit = require('express-rate-limit');
 
 // Validate critical environment variables
-const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL'];
+const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL', 'EMAIL_USER', 'EMAIL_PASS'];
 requiredEnvVars.forEach(varName => {
   if (!process.env[varName]) {
     throw new Error(`Missing required environment variable: ${varName}`);
@@ -25,7 +26,7 @@ const app = express();
 // Enhanced CORS Configuration
 app.use(cors({
   origin: process.env.FRONTEND_URL,
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -34,8 +35,12 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Handle preflight requests
-app.options('*', cors());
+// Rate limiting for verification endpoints
+const verificationLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 3,
+  message: 'Too many verification attempts, please try again later'
+});
 
 // Database Connection
 mongoose.connect(process.env.MONGO_URI, {
@@ -47,7 +52,7 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log('MongoDB connected successfully'))
 .catch(err => console.error('MongoDB connection error:', err));
 
-// User Schema
+// Enhanced User Schema with verification tracking
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -60,8 +65,18 @@ const userSchema = new mongoose.Schema({
   verificationTokenExpires: { type: Date },
   otp: { type: String },
   otpExpiration: { type: Date },
+  emailVerificationAttempts: { type: Number, default: 0 },
+  lastEmailVerificationAttempt: { type: Date },
+  phoneVerificationAttempts: { type: Number, default: 0 },
+  lastPhoneVerificationAttempt: { type: Date },
   lastLogin: { type: Date, default: Date.now }
 }, { timestamps: true });
+
+// Add indexes for better performance
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ googleId: 1 });
+userSchema.index({ verificationToken: 1 });
+userSchema.index({ otp: 1 });
 
 const User = mongoose.model('User', userSchema);
 
@@ -89,6 +104,8 @@ const generateJWT = (user) => {
     {
       userId: user._id,
       email: user.email,
+      emailVerified: user.emailVerified,
+      phoneVerified: user.phoneVerified,
       iss: 'jokercreation-store-api',
       aud: 'jokercreation-store-client'
     },
@@ -97,32 +114,41 @@ const generateJWT = (user) => {
   );
 };
 
-// Send Verification Email
+// Enhanced Send Verification Email with HTML template
 const sendVerificationEmail = async (email, name, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/signup.html?action=verify-email&token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
   
-  await transporter.sendMail({
+  const mailOptions = {
     from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'Verify Your Email Address',
     html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #be9c65;">Welcome to Joker Creation Studio</h2>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+        <h2 style="color: #be9c65; text-align: center;">Welcome to Joker Creation Studio</h2>
         <p>Hello ${name},</p>
         <p>Please click the button below to verify your email address:</p>
-        <a href="${verificationUrl}" 
-           style="display: inline-block; padding: 10px 20px; background-color: #be9c65; color: white; text-decoration: none; border-radius: 4px;">
-          Verify Email
-        </a>
+        <div style="text-align: center; margin: 20px 0;">
+          <a href="${verificationUrl}" 
+             style="display: inline-block; padding: 12px 24px; background-color: #be9c65; color: white; 
+                    text-decoration: none; border-radius: 4px; font-weight: bold;">
+            Verify Email
+          </a>
+        </div>
         <p>If you didn't create an account, please ignore this email.</p>
+        <p style="margin-top: 30px; font-size: 12px; color: #777;">
+          This link will expire in 24 hours. You can request a new verification email if needed.
+        </p>
       </div>
     `
-  });
+  };
+
+  await transporter.sendMail(mailOptions);
 };
 
-// Send SMS Verification (Mock - Replace with actual SMS service)
+// Enhanced SMS Verification (Mock - Replace with actual SMS service)
 const sendSmsVerification = async (phone, code) => {
   console.log(`SMS verification code ${code} sent to ${phone}`);
+  // In production, integrate with SMS service like Twilio
   return true;
 };
 
@@ -214,6 +240,24 @@ app.post('/api/signup', async (req, res) => {
       });
     }
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format'
+      });
+    }
+
+    // Validate password strength
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters with uppercase, lowercase, number and special character'
+      });
+    }
+
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ 
@@ -231,7 +275,9 @@ app.post('/api/signup', async (req, res) => {
       password: hashedPassword,
       phone,
       verificationToken,
-      verificationTokenExpires: Date.now() + 24 * 3600000
+      verificationTokenExpires: Date.now() + 24 * 3600000,
+      emailVerificationAttempts: 1,
+      lastEmailVerificationAttempt: new Date()
     });
 
     await newUser.save();
@@ -240,7 +286,9 @@ app.post('/api/signup', async (req, res) => {
     res.status(201).json({ 
       success: true,
       message: 'Registration successful. Please check your email for verification.',
-      userId: newUser._id
+      userId: newUser._id,
+      email: newUser.email,
+      attemptsRemaining: 4 // 5 total attempts - 1 used
     });
 
   } catch (error) {
@@ -252,7 +300,7 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Fixed Login Endpoint
+// Login Endpoint
 app.post('/api/login', async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
@@ -290,7 +338,9 @@ app.post('/api/login', async (req, res) => {
     if (!user.emailVerified) {
       return res.status(403).json({
         success: false,
-        message: 'Please verify your email address first'
+        message: 'Please verify your email address first',
+        requiresEmailVerification: true,
+        userId: user._id
       });
     }
 
@@ -321,8 +371,8 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Updated Email Verification Endpoint
-app.get('/api/verify-email', async (req, res) => {
+// Email Verification Endpoint
+app.get('/api/verify-email', verificationLimiter, async (req, res) => {
   try {
     const { token } = req.query;
     
@@ -350,10 +400,20 @@ app.get('/api/verify-email', async (req, res) => {
     user.verificationTokenExpires = undefined;
     await user.save();
 
+    const authToken = generateJWT(user);
+
     res.json({ 
       success: true,
       message: 'Email verified successfully',
-      redirectUrl: `${process.env.FRONTEND_URL}/login.html?verified=true`
+      token: authToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone,
+        phoneVerified: user.phoneVerified
+      }
     });
 
   } catch (error) {
@@ -365,19 +425,25 @@ app.get('/api/verify-email', async (req, res) => {
   }
 });
 
-// Resend Verification Email
-app.post('/api/resend-verification', async (req, res) => {
+// Resend Verification Email with Limits
+app.post('/api/resend-verification', verificationLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, userId } = req.body;
     
-    if (!email) {
+    if (!email && !userId) {
       return res.status(400).json({ 
         success: false,
-        message: 'Email is required'
+        message: 'Email or User ID is required'
       });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    let user;
+    if (userId) {
+      user = await User.findById(userId);
+    } else {
+      user = await User.findOne({ email: email.toLowerCase() });
+    }
+
     if (!user) {
       return res.status(404).json({ 
         success: false,
@@ -392,16 +458,49 @@ app.post('/api/resend-verification', async (req, res) => {
       });
     }
 
+    // Check email attempt limits (5 per day)
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    if (user.lastEmailVerificationAttempt > oneDayAgo && 
+        user.emailVerificationAttempts >= 5) {
+      return res.status(429).json({ 
+        success: false,
+        message: 'Email verification limit reached (5 per day)',
+        nextAttemptAllowed: new Date(user.lastEmailVerificationAttempt.getTime() + 24 * 60 * 60 * 1000)
+      });
+    }
+
+    // Check 1-minute cooldown between attempts
+    const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
+    if (user.lastEmailVerificationAttempt > oneMinuteAgo) {
+      return res.status(429).json({ 
+        success: false,
+        message: 'Please wait 1 minute before requesting another verification email',
+        nextAttemptAllowed: new Date(user.lastEmailVerificationAttempt.getTime() + 60 * 1000)
+      });
+    }
+
     const verificationToken = generateToken();
     user.verificationToken = verificationToken;
     user.verificationTokenExpires = Date.now() + 24 * 3600000;
+    
+    // Update attempt tracking
+    if (user.lastEmailVerificationAttempt <= oneDayAgo) {
+      user.emailVerificationAttempts = 1;
+    } else {
+      user.emailVerificationAttempts += 1;
+    }
+    user.lastEmailVerificationAttempt = now;
+    
     await user.save();
-
     await sendVerificationEmail(user.email, user.name, verificationToken);
 
     res.json({ 
       success: true,
-      message: 'Verification email resent successfully'
+      message: 'Verification email resent successfully',
+      attemptsRemaining: 5 - user.emailVerificationAttempts,
+      nextAttemptAllowed: new Date(now.getTime() + 60 * 1000) // 1 minute cooldown
     });
 
   } catch (error) {
@@ -413,8 +512,8 @@ app.post('/api/resend-verification', async (req, res) => {
   }
 });
 
-// Phone Verification
-app.post('/api/send-phone-verification', async (req, res) => {
+// Send Phone Verification with Limits
+app.post('/api/send-phone-verification', verificationLimiter, async (req, res) => {
   try {
     const { userId, phone } = req.body;
     
@@ -433,16 +532,49 @@ app.post('/api/send-phone-verification', async (req, res) => {
       });
     }
 
+    // Check phone attempt limits (3 per day)
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    if (user.lastPhoneVerificationAttempt > oneDayAgo && 
+        user.phoneVerificationAttempts >= 3) {
+      return res.status(429).json({ 
+        success: false,
+        message: 'Phone verification limit reached (3 per day)',
+        nextAttemptAllowed: new Date(user.lastPhoneVerificationAttempt.getTime() + 24 * 60 * 60 * 1000)
+      });
+    }
+
+    // Check 1-minute cooldown between attempts
+    const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
+    if (user.lastPhoneVerificationAttempt > oneMinuteAgo) {
+      return res.status(429).json({ 
+        success: false,
+        message: 'Please wait 1 minute before requesting another verification code',
+        nextAttemptAllowed: new Date(user.lastPhoneVerificationAttempt.getTime() + 60 * 1000)
+      });
+    }
+
     const otp = generateOTP();
     user.otp = otp;
-    user.otpExpiration = Date.now() + 3600000;
+    user.otpExpiration = Date.now() + 3600000; // 1 hour expiration
+    
+    // Update attempt tracking
+    if (user.lastPhoneVerificationAttempt <= oneDayAgo) {
+      user.phoneVerificationAttempts = 1;
+    } else {
+      user.phoneVerificationAttempts += 1;
+    }
+    user.lastPhoneVerificationAttempt = now;
+    
     await user.save();
-
     await sendSmsVerification(phone, otp);
 
     res.json({ 
       success: true,
-      message: 'Verification code sent to your phone'
+      message: 'Verification code sent to your phone',
+      attemptsRemaining: 3 - user.phoneVerificationAttempts,
+      nextAttemptAllowed: new Date(now.getTime() + 60 * 1000) // 1 minute cooldown
     });
 
   } catch (error) {
@@ -455,7 +587,7 @@ app.post('/api/send-phone-verification', async (req, res) => {
 });
 
 // Verify Phone OTP
-app.post('/api/verify-phone', async (req, res) => {
+app.post('/api/verify-phone', verificationLimiter, async (req, res) => {
   try {
     const { userId, code } = req.body;
     
@@ -474,7 +606,7 @@ app.post('/api/verify-phone', async (req, res) => {
       });
     }
 
-    if (user.otp !== code || Date.now() > user.otpExpiration) {
+    if (!user.otp || user.otp !== code || Date.now() > user.otpExpiration) {
       return res.status(400).json({ 
         success: false,
         message: 'Invalid or expired verification code'
@@ -491,7 +623,15 @@ app.post('/api/verify-phone', async (req, res) => {
     res.json({
       success: true,
       token,
-      message: 'Phone number verified successfully'
+      message: 'Phone number verified successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone,
+        phoneVerified: user.phoneVerified
+      }
     });
 
   } catch (error) {
@@ -501,6 +641,16 @@ app.post('/api/verify-phone', async (req, res) => {
       message: 'Server error during phone verification'
     });
   }
+});
+
+// Error Handling Middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    success: false,
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
 });
 
 // Start Server
