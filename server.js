@@ -6,28 +6,31 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
-const axios = require('axios'); // For social login verification
+const axios = require('axios');
+const crypto = require('crypto');
 
-// Create the Express app
 const app = express();
 
 // Middleware
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://jokercreation.store/signup.html' }));
+app.use(cors({ 
+  origin: process.env.CORS_ORIGIN || 'https://jokercreation.store',
+  credentials: true
+}));
 app.use(bodyParser.json());
 
-// MongoDB connection setup
+// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
-  useUnifiedTopology: true,
+  useUnifiedTopology: true
 })
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.log('Error connecting to MongoDB:', err));
+.then(() => console.log('MongoDB connected'))
+.catch(err => console.error('MongoDB connection error:', err));
 
-// Enhanced MongoDB Schema for Users
+// User Schema
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String },
   name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, lowercase: true },
+  password: { type: String },
   phone: { type: String },
   status: { type: String, default: 'Active' },
   lastLogin: { type: Date, default: Date.now },
@@ -38,63 +41,40 @@ const userSchema = new mongoose.Schema({
   verificationToken: { type: String },
   verificationTokenExpires: { type: Date },
   socialAuth: {
-    provider: { type: String }, // 'facebook' or 'google'
+    provider: { type: String },
     id: { type: String }
   }
-});
+}, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
 
-// Helper function to generate JWT token
-const generateJWT = (user) => {
-  return jwt.sign(
-    { userId: user._id, email: user.email, name: user.name },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: '1h' }
-  );
-};
+// Helper Functions
+const generateToken = () => crypto.randomBytes(32).toString('hex');
+const generateJWT = (user) => jwt.sign(
+  { userId: user._id, email: user.email }, 
+  process.env.JWT_SECRET, 
+  { expiresIn: '1h' }
+);
 
-// Middleware to verify JWT token
-const authenticate = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ message: 'Authentication failed, token missing.' });
+// Email Transport
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
+});
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    return res.status(401).json({ message: 'Authentication failed, invalid token.' });
-  }
-};
-
-// Generate random token for email verification
-const generateVerificationToken = () => {
-  return require('crypto').randomBytes(32).toString('hex');
-};
-
-// Send verification email
 const sendVerificationEmail = async (email, name, token) => {
-  let transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
   const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
-
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
+  
+  await transporter.sendMail({
+    from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'Verify Your Email Address',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #333;">Email Verification</h2>
+        <h2 style="color: #be9c65;">Welcome to Joker Creation Studio</h2>
         <p>Hello ${name},</p>
         <p>Please click the button below to verify your email address:</p>
         <a href="${verificationUrl}" 
@@ -104,322 +84,330 @@ const sendVerificationEmail = async (email, name, token) => {
         <p>If you didn't create an account, please ignore this email.</p>
       </div>
     `
-  };
-
-  await transporter.sendMail(mailOptions);
+  });
 };
 
-// Send SMS verification code (mock - integrate with real SMS service)
-const sendSmsVerification = async (phoneNumber, code) => {
-  console.log(`Sending SMS verification code ${code} to ${phoneNumber}`);
-  // In production, integrate with Twilio or similar service
+// SMS Verification (Mock - Replace with actual SMS service)
+const sendSmsVerification = async (phone, code) => {
+  console.log(`SMS verification code ${code} sent to ${phone}`);
   return true;
 };
 
-// Signup Route with Email Verification
+// Routes
 app.post('/api/signup', async (req, res) => {
-  const { email, password, name, phone } = req.body;
-  const lowercaseEmail = email.toLowerCase();
-
   try {
-    const existingUser = await User.findOne({ email: lowercaseEmail });
+    const { name, email, password, phone } = req.body;
+    
+    // Check if user exists
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered.' });
+      return res.status(400).json({ message: 'Email already registered' });
     }
 
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-    const verificationToken = generateVerificationToken();
-    const verificationTokenExpires = Date.now() + 24 * 3600000; // 24 hours
+    const verificationToken = generateToken();
 
+    // Create new user
     const newUser = new User({
-      email: lowercaseEmail,
-      password: hashedPassword,
       name,
+      email: email.toLowerCase(),
+      password: hashedPassword,
       phone,
       verificationToken,
-      verificationTokenExpires
+      verificationTokenExpires: Date.now() + 24 * 3600000 // 24 hours
     });
 
     await newUser.save();
     
     // Send verification email
-    await sendVerificationEmail(lowercaseEmail, name, verificationToken);
-    
-    res.status(200).json({ 
+    await sendVerificationEmail(email, name, verificationToken);
+
+    res.status(201).json({ 
       success: true,
       userId: newUser._id,
-      message: 'User registered successfully. Please check your email for verification.' 
+      message: 'Registration successful. Please check your email for verification.'
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({ message: 'Server error during registration' });
   }
 });
 
-// Verify Email Route
+// Email Verification
 app.get('/api/verify-email', async (req, res) => {
-  const { token } = req.query;
-
   try {
+    const { token } = req.query;
+    
     const user = await User.findOne({ 
       verificationToken: token,
       verificationTokenExpires: { $gt: Date.now() }
     });
 
     if (!user) {
-      return res.status(400).json({ message: 'Invalid or expired verification token.' });
+      return res.status(400).json({ message: 'Invalid or expired verification token' });
     }
 
+    // Mark email as verified
     user.emailVerified = true;
     user.verificationToken = undefined;
     user.verificationTokenExpires = undefined;
-    await user.save();
-
-    // Send SMS verification if phone number exists
+    
+    // If phone exists, send SMS verification
     if (user.phone) {
       const verificationCode = Math.floor(100000 + Math.random() * 900000);
-      user.otp = verificationCode;
+      user.otp = verificationCode.toString();
       user.otpExpiration = Date.now() + 3600000; // 1 hour
-      await user.save();
-      
       await sendSmsVerification(user.phone, verificationCode);
-      
-      return res.status(200).json({ 
-        success: true,
-        message: 'Email verified successfully. Please check your phone for verification code.',
-        requiresPhoneVerification: true
-      });
     }
+
+    await user.save();
 
     res.status(200).json({ 
       success: true,
-      message: 'Email verified successfully.' 
+      requiresPhoneVerification: !!user.phone,
+      message: user.phone 
+        ? 'Email verified. Phone verification code sent.' 
+        : 'Email verified successfully.'
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ message: 'Server error during email verification' });
   }
 });
 
 // Resend Verification Email
 app.post('/api/resend-verification-email', async (req, res) => {
-  const { email } = req.body;
-
   try {
-    const user = await User.findOne({ email });
+    const { email } = req.body;
+    const user = await User.findOne({ email: email.toLowerCase() });
+    
     if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
+      return res.status(404).json({ message: 'User not found' });
     }
 
     if (user.emailVerified) {
-      return res.status(400).json({ message: 'Email is already verified.' });
+      return res.status(400).json({ message: 'Email is already verified' });
     }
 
-    const verificationToken = generateVerificationToken();
+    // Generate new token
+    const verificationToken = generateToken();
     user.verificationToken = verificationToken;
-    user.verificationTokenExpires = Date.now() + 24 * 3600000; // 24 hours
+    user.verificationTokenExpires = Date.now() + 24 * 3600000;
     await user.save();
 
     await sendVerificationEmail(user.email, user.name, verificationToken);
-    
-    res.status(200).json({ message: 'Verification email resent successfully.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+
+    res.status(200).json({ message: 'Verification email resent successfully' });
+  } catch (error) {
+    console.error('Resend email error:', error);
+    res.status(500).json({ message: 'Server error resending verification email' });
   }
 });
 
-// Facebook Signup/Login
+// Facebook Login/Signup
 app.post('/api/signup/facebook', async (req, res) => {
-  const { accessToken } = req.body;
-
   try {
-    // Verify Facebook access token
-    const response = await axios.get(
+    const { accessToken } = req.body;
+    
+    // Verify Facebook token
+    const { data } = await axios.get(
       `https://graph.facebook.com/v12.0/me?fields=id,name,email&access_token=${accessToken}`
     );
 
-    const { id, name, email } = response.data;
+    const { id, name, email } = data;
 
-    // Check if user already exists
-    let user = await User.findOne({ $or: [
-      { email },
-      { 'socialAuth.id': id, 'socialAuth.provider': 'facebook' }
-    ]});
-
-    if (user) {
-      // Update last login and generate token
-      user.lastLogin = Date.now();
-      await user.save();
-      
-      const token = generateJWT(user);
-      return res.status(200).json({
-        success: true,
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          emailVerified: user.emailVerified,
-          phoneVerified: user.phoneVerified
-        }
-      });
-    }
-
-    // Create new user
-    user = new User({
-      email,
-      name,
-      socialAuth: {
-        provider: 'facebook',
-        id
-      },
-      emailVerified: true // Facebook verifies emails
+    // Check if user exists
+    let user = await User.findOne({ 
+      $or: [
+        { email: email.toLowerCase() },
+        { 'socialAuth.id': id, 'socialAuth.provider': 'facebook' }
+      ]
     });
 
+    if (!user) {
+      // Create new user
+      user = new User({
+        name,
+        email: email.toLowerCase(),
+        socialAuth: { provider: 'facebook', id },
+        emailVerified: true
+      });
+      await user.save();
+    }
+
+    // Update last login
+    user.lastLogin = Date.now();
     await user.save();
 
+    // Generate JWT
     const token = generateJWT(user);
+
     res.status(200).json({
       success: true,
       token,
+      userId: user._id,
+      requiresProfileCompletion: !user.phone,
       user: {
-        id: user._id,
         name: user.name,
         email: user.email,
         phone: user.phone,
         emailVerified: user.emailVerified,
         phoneVerified: user.phoneVerified
-      },
-      requiresProfileCompletion: !user.phone
+      }
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to authenticate with Facebook.' });
+  } catch (error) {
+    console.error('Facebook login error:', error);
+    res.status(500).json({ message: 'Failed to authenticate with Facebook' });
   }
 });
 
-// Google Signup/Login
+// Google Login/Signup
 app.post('/api/signup/google', async (req, res) => {
-  const { credential } = req.body;
-
   try {
-    // Verify Google ID token
-    const response = await axios.get(
+    const { credential } = req.body;
+    
+    // Verify Google token
+    const { data } = await axios.get(
       `https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`
     );
 
-    const { sub: id, name, email } = response.data;
+    const { sub: id, name, email } = data;
 
-    // Check if user already exists
-    let user = await User.findOne({ $or: [
-      { email },
-      { 'socialAuth.id': id, 'socialAuth.provider': 'google' }
-    ]});
-
-    if (user) {
-      // Update last login and generate token
-      user.lastLogin = Date.now();
-      await user.save();
-      
-      const token = generateJWT(user);
-      return res.status(200).json({
-        success: true,
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          emailVerified: user.emailVerified,
-          phoneVerified: user.phoneVerified
-        }
-      });
-    }
-
-    // Create new user
-    user = new User({
-      email,
-      name,
-      socialAuth: {
-        provider: 'google',
-        id
-      },
-      emailVerified: true // Google verifies emails
+    // Check if user exists
+    let user = await User.findOne({ 
+      $or: [
+        { email: email.toLowerCase() },
+        { 'socialAuth.id': id, 'socialAuth.provider': 'google' }
+      ]
     });
 
+    if (!user) {
+      // Create new user
+      user = new User({
+        name,
+        email: email.toLowerCase(),
+        socialAuth: { provider: 'google', id },
+        emailVerified: true
+      });
+      await user.save();
+    }
+
+    // Update last login
+    user.lastLogin = Date.now();
     await user.save();
 
+    // Generate JWT
     const token = generateJWT(user);
+
     res.status(200).json({
       success: true,
       token,
+      userId: user._id,
+      requiresProfileCompletion: !user.phone,
       user: {
-        id: user._id,
         name: user.name,
         email: user.email,
         phone: user.phone,
         emailVerified: user.emailVerified,
         phoneVerified: user.phoneVerified
-      },
-      requiresProfileCompletion: !user.phone
+      }
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to authenticate with Google.' });
+  } catch (error) {
+    console.error('Google login error:', error);
+    res.status(500).json({ message: 'Failed to authenticate with Google' });
   }
 });
 
 // Complete Profile (for social signups)
-app.post('/api/complete-profile', authenticate, async (req, res) => {
-  const { fullName, mobileNumber } = req.body;
-
+app.post('/api/complete-profile', async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId);
+    const { userId, name, phone } = req.body;
+    
+    const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    user.name = fullName || user.name;
-    user.phone = mobileNumber;
+    // Update profile
+    user.name = name || user.name;
+    user.phone = phone;
 
-    // Generate and send SMS verification code
+    // Generate and send SMS verification
     const verificationCode = Math.floor(100000 + Math.random() * 900000);
-    user.otp = verificationCode;
+    user.otp = verificationCode.toString();
     user.otpExpiration = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    await sendSmsVerification(mobileNumber, verificationCode);
+    await sendSmsVerification(phone, verificationCode);
 
     res.status(200).json({ 
       success: true,
-      message: 'Profile updated successfully. Verification code sent to your phone.' 
+      message: 'Profile updated. Verification code sent to your phone.'
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+  } catch (error) {
+    console.error('Complete profile error:', error);
+    res.status(500).json({ message: 'Server error completing profile' });
   }
 });
 
-// Send SMS Verification Code
-app.post('/api/send-sms-verification', authenticate, async (req, res) => {
+// Verify Phone Number
+app.post('/api/verify-phone', async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId);
+    const { userId, code } = req.body;
+    
+    const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if code matches and isn't expired
+    if (!user.otp || !user.otpExpiration || 
+        user.otp !== code || Date.now() > user.otpExpiration) {
+      return res.status(400).json({ message: 'Invalid or expired verification code' });
+    }
+
+    // Mark phone as verified
+    user.phoneVerified = true;
+    user.otp = undefined;
+    user.otpExpiration = undefined;
+    await user.save();
+
+    // Generate new JWT with updated claims
+    const token = generateJWT(user);
+
+    res.status(200).json({
+      success: true,
+      token,
+      message: 'Phone number verified successfully'
+    });
+  } catch (error) {
+    console.error('Phone verification error:', error);
+    res.status(500).json({ message: 'Server error verifying phone number' });
+  }
+});
+
+// Resend SMS Verification
+app.post('/api/resend-sms-verification', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
 
     if (!user.phone) {
-      return res.status(400).json({ message: 'Phone number not provided.' });
+      return res.status(400).json({ message: 'No phone number provided' });
     }
 
     if (user.phoneVerified) {
-      return res.status(400).json({ message: 'Phone number already verified.' });
+      return res.status(400).json({ message: 'Phone number already verified' });
     }
 
+    // Generate new code
     const verificationCode = Math.floor(100000 + Math.random() * 900000);
-    user.otp = verificationCode;
+    user.otp = verificationCode.toString();
     user.otpExpiration = Date.now() + 3600000; // 1 hour
     await user.save();
 
@@ -427,60 +415,16 @@ app.post('/api/send-sms-verification', authenticate, async (req, res) => {
 
     res.status(200).json({ 
       success: true,
-      message: 'Verification code sent to your phone.' 
+      message: 'Verification code resent to your phone'
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
+  } catch (error) {
+    console.error('Resend SMS error:', error);
+    res.status(500).json({ message: 'Server error resending verification code' });
   }
 });
 
-// Verify Phone Number
-app.post('/api/verify-phone', authenticate, async (req, res) => {
-  const { verificationCode } = req.body;
-
-  try {
-    const user = await User.findById(req.user.userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
-    }
-
-    if (user.phoneVerified) {
-      return res.status(400).json({ message: 'Phone number already verified.' });
-    }
-
-    if (!user.otp || !user.otpExpiration) {
-      return res.status(400).json({ message: 'No verification code requested.' });
-    }
-
-    if (Date.now() > user.otpExpiration) {
-      return res.status(400).json({ message: 'Verification code expired.' });
-    }
-
-    if (user.otp !== verificationCode) {
-      return res.status(400).json({ message: 'Invalid verification code.' });
-    }
-
-    user.phoneVerified = true;
-    user.otp = undefined;
-    user.otpExpiration = undefined;
-    await user.save();
-
-    res.status(200).json({ 
-      success: true,
-      message: 'Phone number verified successfully.' 
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
-});
-
-// Keep all your existing routes below this line (Login, Account, Forgot Password, etc.)
-// ... [All your existing routes remain unchanged]
-
-// Server listener
+// Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
