@@ -140,7 +140,14 @@ const getLocationFromIp = (ip) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date() });
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date(),
+    services: {
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      email: transporter ? 'configured' : 'not configured'
+    }
+  });
 });
 
 // Google Sign-In Endpoint (Signup)
@@ -297,6 +304,86 @@ app.post('/api/login/google', async (req, res) => {
   }
 });
 
+// Email Login Endpoint
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    const userAgent = req.headers['user-agent'];
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+
+    // Check if password matches (only for non-OAuth users)
+    if (user.password) {
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) {
+        return res.status(401).json({ 
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+    } else {
+      return res.status(401).json({ 
+        success: false,
+        message: 'This email is registered with Google login'
+      });
+    }
+
+    // Update user login info
+    user.lastLogin = new Date();
+    user.ipAddress = ip;
+    user.location = location;
+    user.userAgent = userAgent;
+    await user.save();
+
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      },
+      redirectUrl: '/account.html'
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    
+    // Handle HTML responses from sleeping server
+    if (error.message.includes('Unexpected token')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Server is waking up. Please try again in 30 seconds.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Login failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Email Signup Endpoint
 app.post('/api/signup', async (req, res) => {
   try {
@@ -378,7 +465,7 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// Email Verification Endpoint (Updated)
+// Email Verification Endpoint
 app.get('/api/verify-email', async (req, res) => {
   try {
     const { token: verificationToken } = req.query;
