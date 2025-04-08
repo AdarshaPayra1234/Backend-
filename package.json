@@ -1,7 +1,7 @@
 {
   "name": "user-auth-backend",
   "version": "1.0.0",
-  "description": "Combined authentication and booking system for Joker Creation Studio",
+  "description": "Combined authentication and booking system",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,26 +10,24 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "body-parser": "^1.19.0",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
-    "dotenv": "^10.0.0",
-    "express": "^4.17.1",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
     "geoip-lite": "^1.4.5",
-    "google-auth-library": "^8.7.0",
-    "jsonwebtoken": "^9.0.0",
-    "mongoose": "^6.8.0",
-    "nodemailer": "^6.8.0",
-    "razorpay": "^2.8.0",
+    "google-auth-library": "^9.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^7.4.3",
+    "nodemailer": "^6.9.5",
+    "razorpay": "^2.8.6",
     "request-ip": "^3.3.0"
   },
   "devDependencies": {
-    "nodemon": "^2.0.20"
+    "nodemon": "^3.0.1"
   },
   "engines": {
     "node": "20.x"
-  },
-  "author": "Joker Creation Studio",
-  "license": "ISC"
+  }
 }
