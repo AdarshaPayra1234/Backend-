@@ -1,4 +1,5 @@
-"name": "user-auth-backend",
+{
+  "name": "user-auth-backend",
   "version": "1.0.0",
   "description": "User authentication backend",
   "main": "server.js",
