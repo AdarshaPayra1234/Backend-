@@ -144,6 +144,82 @@ const getLocationFromIp = (ip) => {
   };
 };
 
+// Protected Route Example
+app.get('/api/user', authenticateUser, (req, res) => {
+  res.json({
+    success: true,
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      emailVerified: req.user.emailVerified,
+      phone: req.user.phone
+    }
+  });
+});
+
+// Edit Profile Endpoint
+app.put('/api/user', authenticateUser, async (req, res) => {
+  try {
+    const { name, phone } = req.body;
+    
+    // Validate input
+    if (!name && !phone) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'At least one field (name or phone) is required for update'
+      });
+    }
+
+    // Update only the fields that are provided
+    const updateFields = {};
+    if (name) updateFields.name = name;
+    if (phone) updateFields.phone = phone;
+
+    // Update user in database
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updateFields },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        emailVerified: updatedUser.emailVerified,
+        phone: updatedUser.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Edit profile error:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false,
+        message: error.message
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Error updating profile'
+    });
+  }
+});
+
 // Routes
 
 // Health check endpoint
