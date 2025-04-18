@@ -147,15 +147,20 @@ const getLocationFromIp = (ip) => {
   };
 };
 
-// Initialize Admin User
+// Initialize Admin User - Updated with better error handling
 const initializeAdminUser = async () => {
   try {
-    const adminEmail = 'jokercreationbuisness@gmail.com';
-    const adminPassword = '9002405641';
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_SECRET_KEY;
     
+    if (!adminEmail || !adminPassword) {
+      throw new Error('Admin credentials not configured in environment variables');
+    }
+
     const existingAdmin = await User.findOne({ email: adminEmail });
     
     if (!existingAdmin) {
+      // Create new admin user
       const hashedPassword = await bcrypt.hash(adminPassword, 12);
       const adminUser = new User({
         name: 'Admin',
@@ -168,13 +173,31 @@ const initializeAdminUser = async () => {
       
       await adminUser.save();
       console.log('Admin user created successfully');
-    } else if (!existingAdmin.isAdmin) {
-      existingAdmin.isAdmin = true;
-      await existingAdmin.save();
-      console.log('Existing user promoted to admin');
+    } else {
+      // Update existing admin user if needed
+      let needsUpdate = false;
+      
+      if (!existingAdmin.isAdmin) {
+        existingAdmin.isAdmin = true;
+        needsUpdate = true;
+        console.log('Existing user promoted to admin');
+      }
+      
+      if (!existingAdmin.password) {
+        const hashedPassword = await bcrypt.hash(adminPassword, 12);
+        existingAdmin.password = hashedPassword;
+        needsUpdate = true;
+        console.log('Admin password set');
+      }
+      
+      if (needsUpdate) {
+        await existingAdmin.save();
+      }
     }
   } catch (error) {
     console.error('Error initializing admin user:', error);
+    // Exit if admin initialization fails
+    process.exit(1);
   }
 };
 
@@ -182,25 +205,42 @@ const initializeAdminUser = async () => {
 initializeAdminUser();
 
 // =============================================
-// ADMIN ROUTES
+// ADMIN ROUTES - Updated with better error handling
 // =============================================
 
-// Middleware to verify admin status
+// Middleware to verify admin status - Updated with better JWT handling
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) {
+    if (!authHeader) {
       return res.status(401).json({ 
         success: false,
-        message: 'Authorization token required'
+        message: 'Authorization header missing'
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Authorization token missing'
+      });
+    }
 
+    // Verify token with proper error handling
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      console.error('JWT verification error:', err);
+      return res.status(403).json({ 
+        success: false,
+        message: 'Invalid or expired token',
+        error: err.message
+      });
+    }
+
+    const user = await User.findById(decoded.id);
     if (!user || !user.isAdmin) {
       return res.status(403).json({ 
         success: false,
@@ -212,18 +252,19 @@ const authenticateAdmin = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Admin authentication error:', error);
-    res.status(403).json({ 
+    res.status(500).json({ 
       success: false,
-      message: 'Invalid or expired token'
+      message: 'Internal server error during authentication'
     });
   }
 };
 
-// Admin login endpoint
+// Admin login endpoint - Updated with better password validation
 app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
+    // Validate input
     if (!email || !password) {
       return res.status(400).json({ 
         success: false,
@@ -231,6 +272,7 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
 
+    // Find user with case-insensitive email
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(401).json({ 
@@ -239,8 +281,26 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
 
-    // Check if password matches
-    const isMatch = await bcrypt.compare(password, user.password);
+    // Check if user has a password (might be OAuth user)
+    if (!user.password) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'This account uses social login. Please use the appropriate login method.'
+      });
+    }
+
+    // Compare passwords with proper error handling
+    let isMatch;
+    try {
+      isMatch = await bcrypt.compare(password, user.password);
+    } catch (err) {
+      console.error('Password comparison error:', err);
+      return res.status(500).json({ 
+        success: false,
+        message: 'Error during authentication'
+      });
+    }
+
     if (!isMatch) {
       return res.status(401).json({ 
         success: false,
@@ -248,7 +308,7 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
 
-    // Check if user is admin
+    // Check admin status
     if (!user.isAdmin) {
       return res.status(403).json({ 
         success: false,
@@ -260,8 +320,10 @@ app.post('/api/admin/login', async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
+    // Generate JWT token
     const token = generateJWT(user);
 
+    // Return success response
     res.json({
       success: true,
       token,
@@ -277,10 +339,12 @@ app.post('/api/admin/login', async (req, res) => {
     console.error('Admin login error:', error);
     res.status(500).json({
       success: false,
-      message: 'Admin login failed'
+      message: 'Internal server error during login'
     });
   }
 });
+
+// [Rest of your existing routes remain exactly the same...]
 
 // Get all users (admin only)
 app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
@@ -565,9 +629,7 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
-// =============================================
-// EXISTING ROUTES (UNCHANGED)
-// =============================================
+// [All other existing routes remain exactly the same...]
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
