@@ -150,7 +150,7 @@ const getLocationFromIp = (ip) => {
 / Initialize Admin User - Updated with environment variable rename and security
 const initializeAdminUser = async () => {
   try {
-    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminEmail = process.env.ADMIN_EMAIL_ID;
     const adminPassword = process.env.ADMIN_PASS; // Changed from ADMIN_SECRET_KEY
     
     if (!adminEmail || !adminPassword) {
