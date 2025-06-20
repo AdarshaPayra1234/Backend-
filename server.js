@@ -1531,40 +1531,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Check verification status endpoint
-app.get('/api/check-verification', async (req, res) => {
-  try {
-    const { userId } = req.query;
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required'
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      emailVerified: user.emailVerified
-    });
-
-  } catch (error) {
-    console.error('Check verification error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error checking verification status'
-    });
-  }
-});
-
 // Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
