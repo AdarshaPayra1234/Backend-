@@ -206,7 +206,19 @@ initializeAdminUser();
 // =============================================
 // ADMIN ROUTES
 // =============================================
-
+// Temporary fix - run once then remove
+const createAdmin = async () => {
+  const admin = new User({
+    name: "Admin",
+    email: "jokercreationbuisness@gmail.com",
+    password: await bcrypt.hash("9002405641", 12),
+    isAdmin: true,
+    emailVerified: true
+  });
+  await admin.save();
+  console.log("Admin created");
+};
+createAdmin();
 // Middleware to verify admin status
 const authenticateAdmin = async (req, res, next) => {
   try {
