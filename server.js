@@ -207,7 +207,7 @@ initializeAdminUser();
 // ADMIN ROUTES
 // =============================================
 
-
+// Middleware to verify admin status
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -240,18 +240,7 @@ const authenticateAdmin = async (req, res, next) => {
     }
 
     const user = await User.findById(decoded.id);
-    if (!user) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    // Check if user is admin by checking environment variables
-    const admins = process.env.ADMINS ? JSON.parse(process.env.ADMINS) : [];
-    const isAdmin = admins.some(admin => admin.email === user.email.toLowerCase());
-    
-    if (!isAdmin) {
+    if (!user || !user.isAdmin) {
       return res.status(403).json({ 
         success: false,
         message: 'Admin access required'
@@ -281,18 +270,9 @@ app.post('/api/admin/login', async (req, res) => {
         message: 'Email and password are required'
       });
     }
-    const admins = process.env.ADMINS ? JSON.parse(process.env.ADMINS) : [];
-    const adminConfig = admins.find(admin => admin.email === email.toLowerCase());
-    
-    if (!adminConfig) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
 
     // Find user with case-insensitive email
-     const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(401).json({ 
         success: false,
@@ -350,7 +330,7 @@ app.post('/api/admin/login', async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        isAdmin: true // Always true since they passed admin auth
+        isAdmin: user.isAdmin
       }
     });
 
