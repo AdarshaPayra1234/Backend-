@@ -207,7 +207,7 @@ initializeAdminUser();
 // ADMIN ROUTES
 // =============================================
 
-/ Middleware to verify admin status
+
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
