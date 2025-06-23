@@ -15,8 +15,7 @@ const geoip = require('geoip-lite');
 const requiredEnvVars = [
   'MONGO_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET', 'FRONTEND_URL',
-  'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL', 'ADMIN_SECRET_KEY',
-  'SUPER_ADMIN_FINGERPRINT' // Added for fingerprint verification
+  'EMAIL_USER', 'EMAIL_PASS', 'ADMIN_EMAIL', 'ADMIN_SECRET_KEY'
 ];
 
 requiredEnvVars.forEach(varName => {
@@ -84,34 +83,10 @@ const userSchema = new mongoose.Schema({
   userAgent: { type: String },
   lastLogin: { type: Date },
   isAdmin: { type: Boolean, default: false },
-  isActive: { type: Boolean, default: true },
-  fingerprint: { type: String }, // Added for fingerprint authentication
-  isSuperAdmin: { type: Boolean, default: false } // Added for super admin distinction
+  isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
-// Booking Schema (Added for bookings management)
-const bookingSchema = new mongoose.Schema({
-  customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  customerName: { type: String, required: true },
-  customerEmail: { type: String, required: true },
-  package: { type: String, required: true },
-  bookingDates: { type: String, required: true },
-  status: { type: String, enum: ['pending', 'confirmed', 'cancelled'], default: 'pending' },
-  notes: { type: String },
-  createdAt: { type: Date, default: Date.now }
-});
-
-// Message Schema (Added for admin messaging system)
-const messageSchema = new mongoose.Schema({
-  adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  userEmail: { type: String, required: true },
-  message: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
 const User = mongoose.model('User', userSchema);
-const Booking = mongoose.model('Booking', bookingSchema); // Added
-const Message = mongoose.model('Message', messageSchema); // Added
 
 // Google OAuth Client
 const googleClient = new OAuth2Client({
@@ -142,8 +117,7 @@ const generateJWT = (user) => {
       id: user._id,
       email: user.email,
       verified: user.emailVerified,
-      isAdmin: user.isAdmin,
-      isSuperAdmin: user.isSuperAdmin // Added
+      isAdmin: user.isAdmin
     },
     process.env.JWT_SECRET,
     { expiresIn: '24h' }
@@ -185,7 +159,7 @@ const initializeAdminUser = async () => {
     const existingAdmin = await User.findOne({ email: adminEmail });
     
     if (!existingAdmin) {
-      // Create new admin user with super admin privileges
+      // Create new admin user
       const hashedPassword = await bcrypt.hash(adminPassword, 12);
       const adminUser = new User({
         name: 'Admin',
@@ -193,13 +167,11 @@ const initializeAdminUser = async () => {
         password: hashedPassword,
         emailVerified: true,
         isAdmin: true,
-        isSuperAdmin: true, // Mark as super admin
-        isActive: true,
-        fingerprint: process.env.SUPER_ADMIN_FINGERPRINT // Set super admin fingerprint
+        isActive: true
       });
       
       await adminUser.save();
-      console.log('Super admin user created successfully');
+      console.log('Admin user created successfully');
     } else {
       // Update existing admin user if needed
       let needsUpdate = false;
@@ -210,23 +182,11 @@ const initializeAdminUser = async () => {
         console.log('Existing user promoted to admin');
       }
       
-      if (!existingAdmin.isSuperAdmin) {
-        existingAdmin.isSuperAdmin = true;
-        needsUpdate = true;
-        console.log('Existing admin promoted to super admin');
-      }
-      
       if (!existingAdmin.password) {
         const hashedPassword = await bcrypt.hash(adminPassword, 12);
         existingAdmin.password = hashedPassword;
         needsUpdate = true;
         console.log('Admin password set');
-      }
-      
-      if (!existingAdmin.fingerprint) {
-        existingAdmin.fingerprint = process.env.SUPER_ADMIN_FINGERPRINT;
-        needsUpdate = true;
-        console.log('Admin fingerprint set');
       }
       
       if (needsUpdate) {
@@ -246,67 +206,7 @@ initializeAdminUser();
 // =============================================
 // ADMIN ROUTES
 // =============================================
-// Add this before other admin routes
-app.get('/api/admin/check', async (req, res) => {
-  try {
-    const adminCount = await User.countDocuments({ isAdmin: true });
-    res.json({ 
-      success: true,
-      hasAdmin: adminCount > 0 
-    });
-  } catch (error) {
-    console.error('Admin check error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error checking admin status' 
-    });
-  }
-});
-app.post('/api/admin/register-first', async (req, res) => {
-  try {
-    // Check if any admin exists
-    const adminCount = await User.countDocuments({ isAdmin: true });
-    if (adminCount > 0) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Initial admin already exists' 
-      });
-    }
 
-    // Create first admin
-    const hashedPassword = await bcrypt.hash(req.body.password, 12);
-    const admin = new User({
-      name: req.body.name,
-      email: req.body.email.toLowerCase(),
-      password: hashedPassword,
-      isAdmin: true,
-      isSuperAdmin: true,
-      emailVerified: true,
-      isActive: true
-    });
-
-    await admin.save();
-    
-    const token = generateJWT(admin);
-    
-    res.json({ 
-      success: true,
-      token,
-      user: {
-        id: admin._id,
-        name: admin.name,
-        email: admin.email,
-        isSuperAdmin: admin.isSuperAdmin
-      }
-    });
-  } catch (error) {
-    console.error('First admin creation error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error creating first admin' 
-    });
-  }
-});
 // Middleware to verify admin status
 const authenticateAdmin = async (req, res, next) => {
   try {
@@ -351,57 +251,6 @@ const authenticateAdmin = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Admin authentication error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Internal server error during authentication'
-    });
-  }
-};
-
-// Middleware to verify super admin status
-const authenticateSuperAdmin = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authorization header missing'
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    if (!token) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authorization token missing'
-      });
-    }
-
-    // Verify token with proper error handling
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      console.error('JWT verification error:', err);
-      return res.status(403).json({ 
-        success: false,
-        message: 'Invalid or expired token',
-        error: err.message
-      });
-    }
-
-    const user = await User.findById(decoded.id);
-    if (!user || !user.isSuperAdmin) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Super admin access required'
-      });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('Super admin authentication error:', error);
     res.status(500).json({ 
       success: false,
       message: 'Internal server error during authentication'
@@ -481,8 +330,7 @@ app.post('/api/admin/login', async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        isAdmin: user.isAdmin,
-        isSuperAdmin: user.isSuperAdmin
+        isAdmin: user.isAdmin
       }
     });
 
@@ -495,131 +343,11 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Admin registration endpoint
-app.post('/api/admin/register', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { name, email, password, fingerprint, isSuperAdmin } = req.body;
-    
-    // Validate input
-    if (!name || !email || !password || !fingerprint) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Name, email, password and fingerprint are required'
-      });
-    }
-
-    // Check if email already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Email already registered'
-      });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    // Create new admin user
-    const newAdmin = new User({
-      name,
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      fingerprint,
-      emailVerified: true,
-      isAdmin: true,
-      isSuperAdmin: !!isSuperAdmin,
-      isActive: true
-    });
-
-    await newAdmin.save();
-
-    // Send welcome email
-    await sendEmail(
-      email,
-      'Welcome to Joker Creation Studio Admin Panel',
-      `<div style="font-family: Arial, sans-serif;">
-        <h2 style="color: #be9c65;">Admin Account Created</h2>
-        <p>Hello ${name},</p>
-        <p>Your admin account for Joker Creation Studio has been successfully created.</p>
-        <p>You can now login to the admin panel using your credentials.</p>
-        <p>If you did not request this account, please contact the super admin immediately.</p>
-      </div>`
-    );
-
-    res.status(201).json({
-      success: true,
-      message: 'Admin registered successfully',
-      admin: {
-        id: newAdmin._id,
-        name: newAdmin.name,
-        email: newAdmin.email,
-        isSuperAdmin: newAdmin.isSuperAdmin
-      }
-    });
-
-  } catch (error) {
-    console.error('Admin registration error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error registering admin'
-    });
-  }
-});
-
-// Verify fingerprint endpoint (for admin registration)
-app.post('/api/admin/verify-fingerprint', authenticateAdmin, async (req, res) => {
-  try {
-    const { fingerprint } = req.body;
-    
-    if (!fingerprint) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Fingerprint data is required'
-      });
-    }
-
-    // In a real application, you would verify the fingerprint against stored data
-    // For this example, we'll check against the super admin fingerprint
-    const superAdmin = await User.findOne({ isSuperAdmin: true });
-    
-    if (!superAdmin) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Super admin not found'
-      });
-    }
-
-    // Compare fingerprints (in a real app, use proper biometric verification)
-    const isMatch = fingerprint === superAdmin.fingerprint;
-
-    if (!isMatch) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Fingerprint verification failed'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Fingerprint verified successfully'
-    });
-
-  } catch (error) {
-    console.error('Fingerprint verification error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error verifying fingerprint'
-    });
-  }
-});
-
 // Get all users (admin only)
 app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '', sort = '-createdAt', filter } = req.query;
+    const { page = 1, limit = 10, search = '', sort = '-createdAt' } = req.query;
     
-    // Build query based on filter
     const query = {
       $or: [
         { name: { $regex: search, $options: 'i' } },
@@ -628,24 +356,11 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
       ]
     };
 
-    // Apply filters if provided
-    if (filter === 'admin') {
-      query.isAdmin = true;
-    } else if (filter === 'active') {
-      query.isActive = true;
-    } else if (filter === 'inactive') {
-      query.isActive = false;
-    } else if (filter === 'verified') {
-      query.emailVerified = true;
-    } else if (filter === 'unverified') {
-      query.emailVerified = false;
-    }
-
     const users = await User.find(query)
       .sort(sort)
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit))
-      .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+      .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     const total = await User.countDocuments(query);
 
@@ -670,7 +385,7 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
 app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
-      .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+      .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -763,7 +478,7 @@ app.put('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
       req.params.id,
       { $set: updates },
       { new: true, runValidators: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -869,7 +584,7 @@ app.post('/api/admin/users/:id/deactivate', authenticateAdmin, async (req, res) 
       req.params.id,
       { $set: { isActive: false } },
       { new: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -900,7 +615,7 @@ app.post('/api/admin/users/:id/activate', authenticateAdmin, async (req, res) =>
       req.params.id,
       { $set: { isActive: true } },
       { new: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -931,7 +646,7 @@ app.post('/api/admin/users/:id/make-admin', authenticateAdmin, async (req, res) 
       req.params.id,
       { $set: { isAdmin: true } },
       { new: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -970,7 +685,7 @@ app.post('/api/admin/users/:id/remove-admin', authenticateAdmin, async (req, res
       req.params.id,
       { $set: { isAdmin: false } },
       { new: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -1004,7 +719,7 @@ app.post('/api/admin/users/:id/verify-email', authenticateAdmin, async (req, res
         $unset: { verificationToken: 1, verificationTokenExpires: 1 }
       },
       { new: true }
-    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp -fingerprint');
+    ).select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
     if (!user) {
       return res.status(404).json({
@@ -1080,456 +795,729 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
 });
 
 // =============================================
-// BOOKINGS MANAGEMENT ROUTES (NEW)
-// =============================================
-
-// Create a new booking (admin only)
-app.post('/api/admin/bookings', authenticateAdmin, async (req, res) => {
-  try {
-    const { customerId, customerName, customerEmail, package, bookingDates, notes } = req.body;
-    
-    if (!customerName || !customerEmail || !package || !bookingDates) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Customer name, email, package and booking dates are required'
-      });
-    }
-
-    const newBooking = new Booking({
-      customerId,
-      customerName,
-      customerEmail,
-      package,
-      bookingDates,
-      notes,
-      status: 'pending'
-    });
-
-    await newBooking.save();
-
-    res.status(201).json({
-      success: true,
-      message: 'Booking created successfully',
-      booking: newBooking
-    });
-
-  } catch (error) {
-    console.error('Create booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error creating booking'
-    });
-  }
-});
-
-// Get all bookings (admin only)
-app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search = '', sort = '-createdAt', status } = req.query;
-    
-    // Build query
-    const query = {
-      $or: [
-        { customerName: { $regex: search, $options: 'i' } },
-        { customerEmail: { $regex: search, $options: 'i' } },
-        { package: { $regex: search, $options: 'i' } }
-      ]
-    };
-
-    // Add status filter if provided
-    if (status && ['pending', 'confirmed', 'cancelled'].includes(status)) {
-      query.status = status;
-    }
-
-    const bookings = await Booking.find(query)
-      .sort(sort)
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-
-    const total = await Booking.countDocuments(query);
-
-    res.json({
-      success: true,
-      bookings,
-      total,
-      page: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit))
-    });
-
-  } catch (error) {
-    console.error('Get bookings error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching bookings'
-    });
-  }
-});
-
-// Get booking details (admin only)
-app.get('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const booking = await Booking.findById(req.params.id);
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      booking
-    });
-
-  } catch (error) {
-    console.error('Get booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching booking'
-    });
-  }
-});
-
-// Update booking status (admin only)
-app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) => {
-  try {
-    const { status } = req.body;
-    
-    if (!status || !['pending', 'confirmed', 'cancelled'].includes(status)) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Valid status is required (pending, confirmed, cancelled)'
-      });
-    }
-
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { $set: { status } },
-      { new: true }
-    );
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    // Send email notification to customer
-    await sendEmail(
-      booking.customerEmail,
-      `Your Booking Has Been ${status.charAt(0).toUpperCase() + status.slice(1)} - Joker Creation Studio`,
-      `<div style="font-family: Arial, sans-serif;">
-        <h2 style="color: #be9c65;">Booking Status Update</h2>
-        <p>Hello ${booking.customerName},</p>
-        <p>The status of your booking for "${booking.package}" has been updated to <strong>${status}</strong>.</p>
-        <p>Booking Details:</p>
-        <ul>
-          <li>Package: ${booking.package}</li>
-          <li>Dates: ${booking.bookingDates}</li>
-          <li>Status: ${status}</li>
-        </ul>
-        <p>If you have any questions, please contact us.</p>
-      </div>`
-    );
-
-    res.json({
-      success: true,
-      message: 'Booking status updated successfully',
-      booking
-    });
-
-  } catch (error) {
-    console.error('Update booking status error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating booking status'
-    });
-  }
-});
-
-// Update booking details (admin only)
-app.put('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const { customerName, customerEmail, package, bookingDates, notes } = req.body;
-    
-    const updates = {};
-    if (customerName) updates.customerName = customerName;
-    if (customerEmail) updates.customerEmail = customerEmail;
-    if (package) updates.package = package;
-    if (bookingDates) updates.bookingDates = bookingDates;
-    if (notes !== undefined) updates.notes = notes;
-
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { $set: updates },
-      { new: true, runValidators: true }
-    );
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Booking updated successfully',
-      booking
-    });
-
-  } catch (error) {
-    console.error('Update booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating booking'
-    });
-  }
-});
-
-// Delete booking (admin only)
-app.delete('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const booking = await Booking.findByIdAndDelete(req.params.id);
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Booking deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('Delete booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error deleting booking'
-    });
-  }
-});
-
-// Get booking statistics (admin only)
-app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
-  try {
-    const totalBookings = await Booking.countDocuments();
-    const pendingBookings = await Booking.countDocuments({ status: 'pending' });
-    const confirmedBookings = await Booking.countDocuments({ status: 'confirmed' });
-    const cancelledBookings = await Booking.countDocuments({ status: 'cancelled' });
-
-    // Get bookings per day for the last 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const bookingsByDay = await Booking.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: thirtyDaysAgo }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { "_id": 1 }
-      }
-    ]);
-
-    res.json({
-      success: true,
-      stats: {
-        totalBookings,
-        pendingBookings,
-        confirmedBookings,
-        cancelledBookings,
-        bookingsByDay
-      }
-    });
-
-  } catch (error) {
-    console.error('Get booking stats error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching booking statistics'
-    });
-  }
-});
-
-// =============================================
-// MESSAGING SYSTEM ROUTES (NEW)
-// =============================================
-
-// Send message to user (admin only)
-app.post('/api/admin/messages', authenticateAdmin, async (req, res) => {
-  try {
-    const { userEmail, message } = req.body;
-    
-    if (!userEmail || !message) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User email and message are required'
-      });
-    }
-
-    const newMessage = new Message({
-      adminId: req.user._id,
-      userEmail,
-      message
-    });
-
-    await newMessage.save();
-
-    // Send email to user
-    await sendEmail(
-      userEmail,
-      'Message from Joker Creation Studio Admin',
-      `<div style="font-family: Arial, sans-serif;">
-        <h2 style="color: #be9c65;">Admin Message</h2>
-        <p>Hello,</p>
-        <p>You have received a message from the Joker Creation Studio admin:</p>
-        <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 15px 0;">
-          ${message}
-        </div>
-        <p>Please reply to this email if you need to contact us.</p>
-      </div>`
-    );
-
-    res.status(201).json({
-      success: true,
-      message: 'Message sent successfully',
-      sentMessage: newMessage
-    });
-
-  } catch (error) {
-    console.error('Send message error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error sending message'
-    });
-  }
-});
-
-// Get all sent messages (admin only)
-app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search = '', sort = '-createdAt', filter } = req.query;
-    
-    // Build query
-    const query = {
-      $or: [
-        { userEmail: { $regex: search, $options: 'i' } },
-        { message: { $regex: search, $options: 'i' } }
-      ]
-    };
-
-    // Apply time filters if provided
-    if (filter === 'today') {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      query.createdAt = { $gte: today };
-    } else if (filter === 'week') {
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      query.createdAt = { $gte: oneWeekAgo };
-    } else if (filter === 'month') {
-      const oneMonthAgo = new Date();
-      oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-      query.createdAt = { $gte: oneMonthAgo };
-    }
-
-    const messages = await Message.find(query)
-      .sort(sort)
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit))
-      .populate('adminId', 'name email');
-
-    const total = await Message.countDocuments(query);
-
-    res.json({
-      success: true,
-      messages,
-      total,
-      page: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit))
-    });
-
-  } catch (error) {
-    console.error('Get messages error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching messages'
-    });
-  }
-});
-
-// Get message details (admin only)
-app.get('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const message = await Message.findById(req.params.id)
-      .populate('adminId', 'name email');
-
-    if (!message) {
-      return res.status(404).json({
-        success: false,
-        message: 'Message not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message
-    });
-
-  } catch (error) {
-    console.error('Get message error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching message'
-    });
-  }
-});
-
-// Delete message (admin only)
-app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const message = await Message.findByIdAndDelete(req.params.id);
-
-    if (!message) {
-      return res.status(404).json({
-        success: false,
-        message: 'Message not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Message deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('Delete message error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error deleting message'
-    });
-  }
-});
-
-// =============================================
 // EXISTING USER ROUTES (KEPT EXACTLY AS BEFORE)
 // =============================================
 
-// [All your existing user routes remain unchanged...]
-// Password Reset Endpoints, Google Sign-In, Email Login/Signup, etc.
+// Password Reset Endpoints
+
+// Forgot password - initiate reset process
+app.post('/api/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No user found with that email'
+      });
+    }
+
+    // Generate and save reset token and OTP
+    const resetToken = generateToken();
+    const otp = generateOTP();
+    
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordOtp = otp;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    // Send email with OTP
+    await sendEmail(
+      user.email,
+      'Password Reset OTP - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">Password Reset OTP</h2>
+        <p>Hello ${user.name},</p>
+        <p>You are receiving this because you (or someone else) have requested to reset the password for your account.</p>
+        <p>Your OTP for password reset is: <strong>${otp}</strong></p>
+        <p>Enter this code in the password reset form to verify your identity.</p>
+        <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
+        <p>The OTP will expire in 1 hour.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'Password reset OTP sent',
+      token: resetToken // Return token for subsequent verification
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error processing password reset request'
+    });
+  }
+});
+
+// Verify OTP endpoint
+app.post('/api/verify-otp', async (req, res) => {
+  try {
+    const { email, otp, token } = req.body;
+    
+    if (!email || !otp || !token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email, OTP and token are required'
+      });
+    }
+
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+
+    if (user.resetPasswordOtp !== otp) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // OTP is valid, clear the OTP but keep the token for password reset
+    user.resetPasswordOtp = undefined;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      token: user.resetPasswordToken // Return same token for password reset
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error verifying OTP'
+    });
+  }
+});
+
+// Resend OTP endpoint
+app.post('/api/resend-otp', async (req, res) => {
+  try {
+    const { email, token } = req.body;
+    
+    if (!email || !token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and token are required'
+      });
+    }
+
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+
+    // Generate new OTP
+    const newOtp = generateOTP();
+    user.resetPasswordOtp = newOtp;
+    user.resetPasswordExpires = Date.now() + 3600000; // Reset expiration to 1 hour
+    await user.save();
+
+    // Send email with new OTP
+    await sendEmail(
+      user.email,
+      'New Password Reset OTP - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">New Password Reset OTP</h2>
+        <p>Hello ${user.name},</p>
+        <p>Your new OTP for password reset is: <strong>${newOtp}</strong></p>
+        <p>Enter this code in the password reset form to verify your identity.</p>
+        <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
+        <p>The OTP will expire in 1 hour.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'New OTP sent successfully',
+      token: user.resetPasswordToken // Return same token
+    });
+
+  } catch (error) {
+    console.error('Resend OTP error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error resending OTP'
+    });
+  }
+});
+
+// Reset password endpoint
+app.post('/api/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+    
+    if (!email || !token || !newPassword) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email, token and new password are required'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Password must be at least 8 characters'
+      });
+    }
+
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired password reset token'
+      });
+    }
+
+    // Update password and clear reset fields
+    user.password = await bcrypt.hash(newPassword, 12);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordOtp = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    // Send confirmation email
+    await sendEmail(
+      user.email,
+      'Password Changed - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">Password Changed Successfully</h2>
+        <p>Hello ${user.name},</p>
+        <p>This is a confirmation that the password for your account <strong>${user.email}</strong> has been changed.</p>
+        <p>If you did not make this change, please contact us immediately.</p>
+      </div>`
+    );
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully'
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error resetting password'
+    });
+  }
+});
+
+// Google Sign-In Endpoint (Signup)
+app.post('/api/signup/google', async (req, res) => {
+  try {
+    const { credential, userAgent } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    
+    if (!credential) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google credential is required'
+      });
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+
+    if (!payload.email_verified) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google email not verified'
+      });
+    }
+
+    let user = await User.findOneAndUpdate(
+      { $or: [{ email: payload.email }, { googleId: payload.sub }] },
+      {
+        $set: {
+          name: payload.name,
+          email: payload.email.toLowerCase(),
+          googleId: payload.sub,
+          emailVerified: true,
+          lastLogin: new Date(),
+          ipAddress: ip,
+          location,
+          userAgent
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    const token = generateJWT(user);
+
+    await sendEmail(
+      process.env.ADMIN_EMAIL,
+      'New Google Signup',
+      `<h2>New Google Signup</h2>
+       <p><strong>Name:</strong> ${user.name}</p>
+       <p><strong>Email:</strong> ${user.email}</p>
+       <p><strong>IP:</strong> ${ip}</p>
+       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>`
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Google authentication failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Google Login Endpoint
+app.post('/api/login/google', async (req, res) => {
+  try {
+    const { credential, userAgent } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    
+    if (!credential) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Google credential is required'
+      });
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+
+    const user = await User.findOne({ 
+      $or: [
+        { email: payload.email.toLowerCase() },
+        { googleId: payload.sub }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No account found with this Google email'
+      });
+    }
+
+    // Update user login info
+    user.lastLogin = new Date();
+    user.ipAddress = ip;
+    user.location = location;
+    user.userAgent = userAgent;
+    await user.save();
+
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Google login error:', error);
+    
+    // Handle HTML responses from sleeping server
+    if (error.message.includes('Unexpected token')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Server is waking up. Please try again in 30 seconds.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Google login failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Email Login Endpoint
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    const userAgent = req.headers['user-agent'];
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+
+    // Check if password matches (only for non-OAuth users)
+    if (user.password) {
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) {
+        return res.status(401).json({ 
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+    } else {
+      return res.status(401).json({ 
+        success: false,
+        message: 'This email is registered with Google login'
+      });
+    }
+
+    // Update user login info
+    user.lastLogin = new Date();
+    user.ipAddress = ip;
+    user.location = location;
+    user.userAgent = userAgent;
+    await user.save();
+
+    const token = generateJWT(user);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        phone: user.phone
+      },
+      redirectUrl: '/account.html'
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    
+    // Handle HTML responses from sleeping server
+    if (error.message.includes('Unexpected token')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Server is waking up. Please try again in 30 seconds.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Login failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Email Signup Endpoint
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { name, email, password, phone } = req.body;
+    const ip = req.clientIp;
+    const location = getLocationFromIp(ip);
+    const userAgent = req.headers['user-agent'];
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Name, email and password are required'
+      });
+    }
+
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email already registered'
+      });
+    }
+
+    const verificationToken = generateToken();
+    const newUser = new User({
+      name,
+      email: email.toLowerCase(),
+      password: await bcrypt.hash(password, 12),
+      phone,
+      verificationToken,
+      verificationTokenExpires: Date.now() + 24 * 3600000,
+      ipAddress: ip,
+      location,
+      userAgent
+    });
+
+    await newUser.save();
+
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email.html?token=${verificationToken}`;
+    await sendEmail(
+      email,
+      'Verify Your Email - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">Welcome to Joker Creation Studio</h2>
+        <p>Hello ${name},</p>
+        <p>Please verify your email by clicking the button below:</p>
+        <a href="${verificationUrl}" 
+           style="display: inline-block; padding: 12px 24px; background-color: #be9c65; color: white; 
+                  text-decoration: none; border-radius: 4px; font-weight: bold;">
+          Verify Email
+        </a>
+        <p>If you didn't create an account, please ignore this email.</p>
+      </div>`
+    );
+
+    await sendEmail(
+      process.env.ADMIN_EMAIL,
+      'New User Signup',
+      `<h2>New User Signup</h2>
+       <p><strong>Name:</strong> ${name}</p>
+       <p><strong>Email:</strong> ${email}</p>
+       <p><strong>Phone:</strong> ${phone || 'Not provided'}</p>
+       <p><strong>IP:</strong> ${ip}</p>
+       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>`
+    );
+
+    res.status(201).json({ 
+      success: true,
+      message: 'Registration successful. Please check your email for verification.',
+      userId: newUser._id
+    });
+
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during registration'
+    });
+  }
+});
+
+// Email Verification Endpoint
+app.get('/api/verify-email', async (req, res) => {
+  try {
+    const { token: verificationToken } = req.query;
+    
+    if (!verificationToken) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
+
+    const user = await User.findOne({ 
+      verificationToken: verificationToken,
+      verificationTokenExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification token'
+      });
+    }
+
+    // Mark email as verified
+    user.emailVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+    await user.save();
+
+    const authToken = generateJWT(user);
+
+    // Return JSON response for API calls
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.json({
+        success: true,
+        message: 'Email verified successfully',
+        token: authToken,
+        userId: user._id
+      });
+    }
+
+    // Redirect for browser requests
+    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=true&token=${authToken}&userId=${user._id}`);
+
+  } catch (error) {
+    console.error('Email verification error:', error);
+    
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.status(500).json({ 
+        success: false,
+        message: 'Email verification failed'
+      });
+    }
+    
+    res.redirect(`${process.env.FRONTEND_URL}/verify-email.html?success=false`);
+  }
+});
+
+// Token Verification Middleware
+const authenticateUser = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(403).json({ 
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
+};
+
+// Protected Route Example
+app.get('/api/user', authenticateUser, (req, res) => {
+  res.json({
+    success: true,
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      emailVerified: req.user.emailVerified,
+      phone: req.user.phone
+    }
+  });
+});
+
+// Edit Profile Endpoint
+app.put('/api/user', authenticateUser, async (req, res) => {
+  try {
+    const { name, phone } = req.body;
+    
+    // Validate input
+    if (!name && !phone) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'At least one field (name or phone) is required for update'
+      });
+    }
+
+    // Update only the fields that are provided
+    const updateFields = {};
+    if (name) updateFields.name = name;
+    if (phone) updateFields.phone = phone;
+
+    // Update user in database
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updateFields },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        emailVerified: updatedUser.emailVerified,
+        phone: updatedUser.phone
+      }
+    });
+
+  } catch (error) {
+    console.error('Edit profile error:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false,
+        message: error.message
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Error updating profile'
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
