@@ -147,58 +147,7 @@ const getLocationFromIp = (ip) => {
   };
 };
 
-const initializeAdminUser = async () => {
-  try {
-    const adminEmail = process.env.ADMIN_EMAIL;
-    const adminPassword = process.env.ADMIN_SECRET_KEY;
-    
-    if (!adminEmail || !adminPassword) {
-      throw new Error('Admin credentials not configured in environment variables');
-    }
-
-    const existingAdmin = await User.findOne({ email: adminEmail });
-    
-    if (!existingAdmin) {
-      // Create new admin user
-      const hashedPassword = await bcrypt.hash(adminPassword, 12);
-      const adminUser = new User({
-        name: 'Admin',
-        email: adminEmail,
-        password: hashedPassword,
-        emailVerified: true,
-        isAdmin: true,
-        isActive: true
-      });
-      
-      await adminUser.save();
-      console.log('Admin user created successfully');
-    } else {
-      // Update existing admin user if needed
-      let needsUpdate = false;
-      
-      if (!existingAdmin.isAdmin) {
-        existingAdmin.isAdmin = true;
-        needsUpdate = true;
-        console.log('Existing user promoted to admin');
-      }
-      
-      if (!existingAdmin.password) {
-        const hashedPassword = await bcrypt.hash(adminPassword, 12);
-        existingAdmin.password = hashedPassword;
-        needsUpdate = true;
-        console.log('Admin password set');
-      }
-      
-      if (needsUpdate) {
-        await existingAdmin.save();
-      }
-    }
-  } catch (error) {
-    console.error('Error initializing admin user:', error);
-    // Exit if admin initialization fails
-    process.exit(1);
-  }
-};
+initializeAdminUser()
 
 // Call the function to initialize admin user when server starts
 initializeAdminUser();
