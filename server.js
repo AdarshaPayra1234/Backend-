@@ -246,7 +246,67 @@ initializeAdminUser();
 // =============================================
 // ADMIN ROUTES
 // =============================================
+// Add this before other admin routes
+app.get('/api/admin/check', async (req, res) => {
+  try {
+    const adminCount = await User.countDocuments({ isAdmin: true });
+    res.json({ 
+      success: true,
+      hasAdmin: adminCount > 0 
+    });
+  } catch (error) {
+    console.error('Admin check error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error checking admin status' 
+    });
+  }
+});
+app.post('/api/admin/register-first', async (req, res) => {
+  try {
+    // Check if any admin exists
+    const adminCount = await User.countDocuments({ isAdmin: true });
+    if (adminCount > 0) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Initial admin already exists' 
+      });
+    }
 
+    // Create first admin
+    const hashedPassword = await bcrypt.hash(req.body.password, 12);
+    const admin = new User({
+      name: req.body.name,
+      email: req.body.email.toLowerCase(),
+      password: hashedPassword,
+      isAdmin: true,
+      isSuperAdmin: true,
+      emailVerified: true,
+      isActive: true
+    });
+
+    await admin.save();
+    
+    const token = generateJWT(admin);
+    
+    res.json({ 
+      success: true,
+      token,
+      user: {
+        id: admin._id,
+        name: admin.name,
+        email: admin.email,
+        isSuperAdmin: admin.isSuperAdmin
+      }
+    });
+  } catch (error) {
+    console.error('First admin creation error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error creating first admin' 
+    });
+  }
+});
 // Middleware to verify admin status
 const authenticateAdmin = async (req, res, next) => {
   try {
