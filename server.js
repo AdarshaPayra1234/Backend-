@@ -147,10 +147,62 @@ const getLocationFromIp = (ip) => {
   };
 };
 
-initializeAdminUser()
+const initializeAdminUser = async () => {
+  try {
+    const adminEmail = process.env.ADMIN_EMAIL_ID; // Using your existing variable
+    const adminPassword = process.env.ADMIN_PASS;  // Using your existing variable
+    
+    if (!adminEmail || !adminPassword) {
+      throw new Error('Admin credentials not configured in environment variables');
+    }
 
-// Call the function to initialize admin user when server starts
-initializeAdminUser();
+    const existingAdmin = await User.findOne({ email: adminEmail.toLowerCase() });
+    
+    if (!existingAdmin) {
+      // Create new admin user
+      const hashedPassword = await bcrypt.hash(adminPassword, 12);
+      const adminUser = new User({
+        name: 'Admin',
+        email: adminEmail.toLowerCase(),
+        password: hashedPassword,
+        emailVerified: true,
+        isAdmin: true,
+        isActive: true
+      });
+      
+      await adminUser.save();
+      console.log('Admin user created successfully');
+    } else {
+      // Update existing admin user if needed
+      let needsUpdate = false;
+      
+      // Verify password matches
+      const isMatch = await bcrypt.compare(adminPassword, existingAdmin.password);
+      if (!isMatch) {
+        const hashedPassword = await bcrypt.hash(adminPassword, 12);
+        existingAdmin.password = hashedPassword;
+        needsUpdate = true;
+        console.log('Admin password updated');
+      }
+      
+      if (!existingAdmin.isAdmin) {
+        existingAdmin.isAdmin = true;
+        needsUpdate = true;
+        console.log('User promoted to admin');
+      }
+      
+      if (needsUpdate) {
+        await existingAdmin.save();
+      }
+    }
+  } catch (error) {
+    console.error('Error initializing admin user:', error);
+    // Exit if admin initialization fails
+    process.exit(1);
+  }
+};
+
+
 
 // =============================================
 // ADMIN ROUTES
