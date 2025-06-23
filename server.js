@@ -225,6 +225,7 @@ const authenticateAdmin = async (req, res, next) => {
         message: 'Authorization token missing'
       });
     }
+
     // Verify token with proper error handling
     let decoded;
     try {
@@ -245,6 +246,8 @@ const authenticateAdmin = async (req, res, next) => {
         message: 'User not found'
       });
     }
+
+    // Check if user is admin by checking environment variables
     const admins = process.env.ADMINS ? JSON.parse(process.env.ADMINS) : [];
     const isAdmin = admins.some(admin => admin.email === user.email.toLowerCase());
     
