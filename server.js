@@ -149,7 +149,7 @@ const getLocationFromIp = (ip) => {
 
 const initializeAdminUser = async () => {
   try {
-    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminEmail = process.env.ADMIN_EMAIL_ID;
     const adminPassword = process.env.ADMIN_SECRET_KEY;
     
     if (!adminEmail || !adminPassword) {
