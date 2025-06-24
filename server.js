@@ -95,12 +95,23 @@ const googleClient = new OAuth2Client({
 });
 
 // Email configuration
+// Email configuration for Hostinger
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.hostinger.com',
+  port: 465, // SSL port
+  secure: true, // true for 465, false for other ports
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
+    user: 'contact@jokercreation.store', // Your Hostinger email
+    pass: process.env.EMAIL_PASS // Password from .env
+  },
+  tls: {
+    rejectUnauthorized: false // For self-signed certificates
+  },
+  pool: true, // Use connection pooling
+  maxConnections: 5,
+  maxMessages: 100,
+  rateLimit: 5,
+  debug: process.env.NODE_ENV === 'development'
 });
 
 // Helper functions
