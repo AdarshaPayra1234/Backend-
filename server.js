@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 const requestIp = require('request-ip');
 const geoip = require('geoip-lite');
+const path = require('path');
 
 // Validate environment variables
 const requiredEnvVars = [
@@ -40,19 +41,18 @@ app.use(express.json());
 app.use(requestIp.mw());
 
 // Secure rate limiting configuration
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+ const limiter = rateLimit({
+   windowMs: 15 * 60 * 1000, // 15 minutes
+   max: 100,
   validate: { 
     trustProxy: false // Don't trust X-Forwarded-For for rate limiting
   },
   keyGenerator: (req) => {
-    // Use the direct connection IP for rate limiting
-    return req.socket.remoteAddress;
-  },
-  message: 'Too many requests from this IP, please try again later'
-});
-app.use(limiter);
+     return req.socket.remoteAddress;
+   },
+   message: 'Too many requests from this IP, please try again later'
+ });
+ app.use(limiter);
 
 // Database connection
 mongoose.connect(process.env.MONGO_URI)
@@ -1047,25 +1047,37 @@ app.post('/api/reset-password', async (req, res) => {
 });
 
 // Google Sign-In Endpoint (Signup)
+// Google Sign-Up Endpoint (with Phone Verification Support)
 app.post('/api/signup/google', async (req, res) => {
   try {
-    const { credential, userAgent } = req.body;
+    const { credential, userAgent, name, email, googleId, picture, phone } = req.body;
     const ip = req.clientIp;
     const location = getLocationFromIp(ip);
     
-    if (!credential) {
+    // Support both credential-based and direct data signup
+    let payload;
+    if (credential) {
+      // Traditional Google OAuth flow
+      const ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    } else if (googleId && email) {
+      // Direct data flow (from frontend modal with phone verification)
+      payload = {
+        sub: googleId,
+        email: email,
+        email_verified: true,
+        name: name,
+        picture: picture
+      };
+    } else {
       return res.status(400).json({ 
         success: false,
-        message: 'Google credential is required'
+        message: 'Invalid request parameters. Either credential or googleId+email are required.'
       });
     }
-
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-    const payload = ticket.getPayload();
 
     if (!payload.email_verified) {
       return res.status(400).json({ 
@@ -1074,33 +1086,56 @@ app.post('/api/signup/google', async (req, res) => {
       });
     }
 
-    let user = await User.findOneAndUpdate(
-      { $or: [{ email: payload.email }, { googleId: payload.sub }] },
-      {
-        $set: {
-          name: payload.name,
-          email: payload.email.toLowerCase(),
-          googleId: payload.sub,
-          emailVerified: true,
-          lastLogin: new Date(),
-          ipAddress: ip,
-          location,
-          userAgent
-        }
-      },
-      { upsert: true, new: true }
-    );
+    // Check if user already exists
+    let user = await User.findOne({ 
+      $or: [
+        { email: payload.email.toLowerCase() },
+        { googleId: payload.sub }
+      ]
+    });
+
+    if (user) {
+      // Update existing user with phone number if provided
+      if (phone) {
+        user.phone = phone;
+      }
+      
+      user.lastLogin = new Date();
+      user.ipAddress = ip;
+      user.location = location;
+      user.userAgent = userAgent || req.headers['user-agent'];
+      await user.save();
+    } else {
+      // Create new user
+      user = new User({
+        name: payload.name,
+        email: payload.email.toLowerCase(),
+        googleId: payload.sub,
+        phone: phone,
+        emailVerified: true,
+        lastLogin: new Date(),
+        ipAddress: ip,
+        location: location,
+        userAgent: userAgent || req.headers['user-agent']
+      });
+      await user.save();
+    }
 
     const token = generateJWT(user);
 
+    // Send notification email to admin
     await sendEmail(
       process.env.ADMIN_EMAIL,
-      'New Google Signup',
-      `<h2>New Google Signup</h2>
-       <p><strong>Name:</strong> ${user.name}</p>
-       <p><strong>Email:</strong> ${user.email}</p>
-       <p><strong>IP:</strong> ${ip}</p>
-       <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>`
+      'New Google Signup - Joker Creation Studio',
+      `<div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #be9c65;">New Google Signup</h2>
+        <p><strong>Name:</strong> ${user.name}</p>
+        <p><strong>Email:</strong> ${user.email}</p>
+        <p><strong>Phone:</strong> ${user.phone || 'Not provided'}</p>
+        <p><strong>IP:</strong> ${ip}</p>
+        <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
+        <p><strong>Signup Method:</strong> Google OAuth</p>
+      </div>`
     );
 
     res.json({
@@ -1117,6 +1152,15 @@ app.post('/api/signup/google', async (req, res) => {
 
   } catch (error) {
     console.error('Google auth error:', error);
+    
+    // Handle specific errors
+    if (error.message.includes('Invalid token signature')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Google authentication token'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Google authentication failed',
@@ -1548,3 +1592,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
+
+
+
