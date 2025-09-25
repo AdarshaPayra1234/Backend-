@@ -88,6 +88,177 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
+
+// ==================== SHARED RBAC SCHEMAS ====================
+
+// Shared Admin Profile Schema (used by both backends)
+const adminProfileSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  role: { 
+    type: String, 
+    required: true, 
+    enum: ['super_admin', 'admin', 'editor', 'booking_manager', 'viewer'],
+    default: 'viewer'
+  },
+  // Systems this admin can access
+  systems: {
+    user_management: { type: Boolean, default: false },
+    booking_management: { type: Boolean, default: false }
+  },
+  // Specific permissions for each system
+  permissions: {
+    user_management: {
+      users: { type: Boolean, default: false },
+      analytics: { type: Boolean, default: false },
+      system_settings: { type: Boolean, default: false }
+    },
+    booking_management: {
+      bookings: { type: Boolean, default: false },
+      gallery: { type: Boolean, default: false },
+      messages: { type: Boolean, default: false },
+      coupons: { type: Boolean, default: false },
+      reports: { type: Boolean, default: false }
+    }
+  },
+  isActive: { type: Boolean, default: true },
+  lastLogin: Date,
+  loginHistory: [{
+    timestamp: Date,
+    ipAddress: String,
+    userAgent: String,
+    system: { type: String, enum: ['user_management', 'booking_management'] }
+  }],
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Shared Audit Log Schema (used by both backends)
+const auditLogSchema = new mongoose.Schema({
+  adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  adminEmail: String,
+  action: { type: String, required: true }, // login, create, update, delete, etc.
+  resource: { type: String, required: true }, // user, booking, etc.
+  resourceId: String,
+  system: { type: String, enum: ['user_management', 'booking_management'], required: true },
+  ipAddress: String,
+  userAgent: String,
+  details: mongoose.Schema.Types.Mixed,
+  timestamp: { type: Date, default: Date.now }
+});
+
+const AdminProfile = mongoose.model('AdminProfile', adminProfileSchema);
+const AuditLog = mongoose.model('AuditLog', auditLogSchema);
+
+// ==================== ROLE PERMISSIONS CONFIGURATION ====================
+
+const rolePermissions = {
+  super_admin: {
+    systems: {
+      user_management: true,
+      booking_management: true
+    },
+    permissions: {
+      user_management: {
+        users: true,
+        analytics: true,
+        system_settings: true
+      },
+      booking_management: {
+        bookings: true,
+        gallery: true,
+        messages: true,
+        coupons: true,
+        reports: true
+      }
+    },
+    description: 'Full access to all systems'
+  },
+  admin: {
+    systems: {
+      user_management: true,
+      booking_management: true
+    },
+    permissions: {
+      user_management: {
+        users: true,
+        analytics: true,
+        system_settings: false
+      },
+      booking_management: {
+        bookings: true,
+        gallery: true,
+        messages: true,
+        coupons: true,
+        reports: false
+      }
+    },
+    description: 'Administrative access to most features'
+  },
+  editor: {
+    systems: {
+      user_management: false,
+      booking_management: true
+    },
+    permissions: {
+      user_management: {
+        users: false,
+        analytics: false,
+        system_settings: false
+      },
+      booking_management: {
+        bookings: true,
+        gallery: true,
+        messages: true,
+        coupons: false,
+        reports: false
+      }
+    },
+    description: 'Content editing privileges for booking system'
+  },
+  booking_manager: {
+    systems: {
+      user_management: false,
+      booking_management: true
+    },
+    permissions: {
+      user_management: {
+        users: false,
+        analytics: false,
+        system_settings: false
+      },
+      booking_management: {
+        bookings: true,
+        gallery: false,
+        messages: true,
+        coupons: false,
+        reports: true
+      }
+    },
+    description: 'Booking management privileges'
+  },
+  viewer: {
+    systems: {
+      user_management: true,
+      booking_management: true
+    },
+    permissions: {
+      user_management: {
+        users: true,
+        analytics: true,
+        system_settings: false
+      },
+      booking_management: {
+        bookings: true,
+        gallery: true,
+        messages: false,
+        coupons: false,
+        reports: true
+      }
+    },
+    description: 'Read-only access to both systems'
+  }
+};
+
 // Google OAuth Client
 const googleClient = new OAuth2Client({
   clientId: process.env.GOOGLE_CLIENT_ID,
@@ -158,6 +329,8 @@ const getLocationFromIp = (ip) => {
   };
 };
 
+// ==================== ENHANCED ADMIN INITIALIZATION ====================
+
 const initializeAdminUser = async () => {
   try {
     const adminEmail = process.env.ADMIN_EMAIL_ID;
@@ -170,10 +343,10 @@ const initializeAdminUser = async () => {
     const existingAdmin = await User.findOne({ email: adminEmail });
     
     if (!existingAdmin) {
-      // Create new admin user
+      // Create new super admin user
       const hashedPassword = await bcrypt.hash(adminPassword, 12);
       const adminUser = new User({
-        name: 'Admin',
+        name: 'Super Admin',
         email: adminEmail,
         password: hashedPassword,
         emailVerified: true,
@@ -182,31 +355,47 @@ const initializeAdminUser = async () => {
       });
       
       await adminUser.save();
-      console.log('Admin user created successfully');
-    } else {
-      // Update existing admin user if needed
-      let needsUpdate = false;
       
+      // Create admin profile with super_admin role
+      const adminProfile = new AdminProfile({
+        userId: adminUser._id,
+        role: 'super_admin',
+        systems: rolePermissions.super_admin.systems,
+        permissions: rolePermissions.super_admin.permissions,
+        isActive: true
+      });
+      
+      await adminProfile.save();
+      console.log('✅ Super admin user created with full system access');
+      
+    } else {
+      // Ensure existing admin has proper profile
+      let adminProfile = await AdminProfile.findOne({ userId: existingAdmin._id });
+      
+      if (!adminProfile) {
+        adminProfile = new AdminProfile({
+          userId: existingAdmin._id,
+          role: 'super_admin',
+          systems: rolePermissions.super_admin.systems,
+          permissions: rolePermissions.super_admin.permissions,
+          isActive: true
+        });
+        await adminProfile.save();
+        console.log('✅ Admin profile created for existing user');
+      }
+      
+      // Ensure user is marked as admin
       if (!existingAdmin.isAdmin) {
         existingAdmin.isAdmin = true;
-        needsUpdate = true;
-        console.log('Existing user promoted to admin');
-      }
-      
-      if (!existingAdmin.password) {
-        const hashedPassword = await bcrypt.hash(adminPassword, 12);
-        existingAdmin.password = hashedPassword;
-        needsUpdate = true;
-        console.log('Admin password set');
-      }
-      
-      if (needsUpdate) {
         await existingAdmin.save();
+        console.log('✅ Existing user promoted to admin');
       }
     }
+    
+    console.log('✅ RBAC admin initialization completed');
+    
   } catch (error) {
-    console.error('Error initializing admin user:', error);
-    // Exit if admin initialization fails
+    console.error('❌ Error initializing admin user:', error);
     process.exit(1);
   }
 };
@@ -219,13 +408,19 @@ initializeAdminUser();
 // =============================================
 
 // Middleware to verify admin status
+// ==================== SIMPLIFIED RBAC AUTHENTICATION ====================
+
+// Enhanced admin authentication
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
+    const targetSystem = req.headers['x-target-system'] || 'user_management';
+
     if (!authHeader) {
       return res.status(401).json({ 
         success: false,
-        message: 'Authorization header missing'
+        message: 'Authorization header missing',
+        code: 'MISSING_AUTH_HEADER'
       });
     }
 
@@ -233,20 +428,20 @@ const authenticateAdmin = async (req, res, next) => {
     if (!token) {
       return res.status(401).json({ 
         success: false,
-        message: 'Authorization token missing'
+        message: 'Authorization token missing',
+        code: 'MISSING_TOKEN'
       });
     }
 
-    // Verify token with proper error handling
+    // Verify token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
-      console.error('JWT verification error:', err);
       return res.status(403).json({ 
         success: false,
         message: 'Invalid or expired token',
-        error: err.message
+        code: 'INVALID_TOKEN'
       });
     }
 
@@ -254,18 +449,139 @@ const authenticateAdmin = async (req, res, next) => {
     if (!user || !user.isAdmin) {
       return res.status(403).json({ 
         success: false,
-        message: 'Admin access required'
+        message: 'Admin access required',
+        code: 'ADMIN_ACCESS_REQUIRED'
       });
     }
 
+    // Get admin profile from shared database
+    const adminProfile = await AdminProfile.findOne({ userId: user._id });
+    if (!adminProfile || !adminProfile.isActive) {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Admin profile not active or not found',
+        code: 'ADMIN_PROFILE_INACTIVE'
+      });
+    }
+
+    // Check if admin has access to the target system
+    if (!adminProfile.systems[targetSystem]) {
+      return res.status(403).json({ 
+        success: false,
+        message: `Access to ${targetSystem} system not granted`,
+        code: 'SYSTEM_ACCESS_DENIED'
+      });
+    }
+
+    // Add admin info to request
     req.user = user;
+    req.adminProfile = adminProfile;
+    req.targetSystem = targetSystem;
+
+    // Log login activity
+    await logAdminActivity(req, 'login', targetSystem);
+
     next();
+
   } catch (error) {
     console.error('Admin authentication error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Internal server error during authentication'
+      message: 'Internal server error during authentication',
+      code: 'AUTHENTICATION_ERROR'
     });
+  }
+};
+
+// Permission check middleware
+const checkPermission = (resource, action = 'access') => {
+  return async (req, res, next) => {
+    try {
+      const { adminProfile, targetSystem } = req;
+
+      // Super admin has all permissions
+      if (adminProfile.role === 'super_admin') {
+        return next();
+      }
+
+      // Check if admin has permission for this resource in the target system
+      const hasPermission = adminProfile.permissions[targetSystem]?.[resource];
+      
+      if (!hasPermission) {
+        return res.status(403).json({ 
+          success: false,
+          message: `Insufficient permissions for ${resource} in ${targetSystem}`,
+          code: 'INSUFFICIENT_PERMISSIONS'
+        });
+      }
+
+      next();
+    } catch (err) {
+      console.error('Permission check error:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Permission verification failed',
+        code: 'PERMISSION_CHECK_FAILED'
+      });
+    }
+  };
+};
+
+// Audit logging
+const auditLog = (action, resource) => {
+  return async (req, res, next) => {
+    const originalSend = res.send;
+    
+    res.send = function(data) {
+      // Log the action asynchronously
+      if (req.adminProfile) {
+        const auditRecord = new AuditLog({
+          adminId: req.user._id,
+          adminEmail: req.user.email,
+          action,
+          resource,
+          resourceId: req.params.id,
+          system: req.targetSystem,
+          ipAddress: req.clientIp,
+          userAgent: req.get('User-Agent'),
+          details: {
+            method: req.method,
+            url: req.originalUrl
+          },
+          timestamp: new Date()
+        });
+        
+        auditRecord.save().catch(err => 
+          console.error('Audit log save error:', err)
+        );
+      }
+      
+      originalSend.call(this, data);
+    };
+    
+    next();
+  };
+};
+
+// Log admin activity
+const logAdminActivity = async (req, action, system) => {
+  try {
+    await AdminProfile.findOneAndUpdate(
+      { userId: req.user._id },
+      {
+        $set: { lastLogin: new Date() },
+        $push: {
+          loginHistory: {
+            timestamp: new Date(),
+            ipAddress: req.clientIp,
+            userAgent: req.get('User-Agent'),
+            system: system
+          }
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Error logging admin activity:', err);
   }
 };
 
@@ -355,42 +671,47 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // Get all users (admin only)
-app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/users', 
+  authenticateAdmin,
+  checkPermission('users'),
+  auditLog('read', 'users'),
+  async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '', sort = '-createdAt' } = req.query;
-    
-    const query = {
-      $or: [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } }
-      ]
-    };
+      const { page = 1, limit = 10, search = '', sort = '-createdAt' } = req.query;
+      
+      const query = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } }
+        ]
+      };
 
-    const users = await User.find(query)
-      .sort(sort)
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit))
-      .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
+      const users = await User.find(query)
+        .sort(sort)
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .select('-password -googleId -facebookId -verificationToken -resetPasswordToken -resetPasswordOtp');
 
-    const total = await User.countDocuments(query);
+      const total = await User.countDocuments(query);
 
-    res.json({
-      success: true,
-      users,
-      total,
-      page: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit))
-    });
+      res.json({
+        success: true,
+        users,
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit))
+      });
 
-  } catch (error) {
-    console.error('Get users error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching users'
-    });
+    } catch (error) {
+      console.error('Get users error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching users'
+      });
+    }
   }
-});
+);
 
 // Get user details (admin only)
 app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
@@ -420,7 +741,11 @@ app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
 });
 
 // Create new user (admin only)
-app.post('/api/admin/users', authenticateAdmin, async (req, res) => {
+app.post('/api/admin/users',
+  authenticateAdmin,
+  checkPermission('users'),
+  auditLog('create', 'users'),
+  async (req, res) => {
   try {
     const { name, email, password, phone, isAdmin } = req.body;
     
@@ -473,7 +798,11 @@ app.post('/api/admin/users', authenticateAdmin, async (req, res) => {
 });
 
 // Update user (admin only)
-app.put('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
+app.put('/api/admin/users/:id',
+  authenticateAdmin,
+  checkPermission('users'),
+  auditLog('update', 'users'),
+  async (req, res) => {
   try {
     const { name, email, phone, isAdmin, isActive, emailVerified } = req.body;
     
@@ -804,6 +1133,272 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
     });
   }
 });
+
+
+// ==================== ADMIN MANAGEMENT ROUTES ====================
+
+// Get current admin's profile and permissions
+app.get('/api/admin/my-profile', 
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      res.json({
+        success: true,
+        admin: {
+          id: req.user._id,
+          name: req.user.name,
+          email: req.user.email,
+          role: req.adminProfile.role,
+          systems: req.adminProfile.systems,
+          permissions: req.adminProfile.permissions,
+          lastLogin: req.adminProfile.lastLogin
+        }
+      });
+    } catch (err) {
+      console.error('Error fetching admin profile:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to fetch admin profile'
+      });
+    }
+  }
+);
+
+// Get all admins (super_admin only)
+app.get('/api/admin/management/admins',
+  authenticateAdmin,
+  checkPermission('system_settings'),
+  auditLog('read', 'admins'),
+  async (req, res) => {
+    try {
+      const admins = await User.aggregate([
+        { $match: { isAdmin: true } },
+        {
+          $lookup: {
+            from: 'adminprofiles',
+            localField: '_id',
+            foreignField: 'userId',
+            as: 'profile'
+          }
+        },
+        {
+          $project: {
+            password: 0,
+            googleId: 0,
+            facebookId: 0,
+            verificationToken: 0,
+            resetPasswordToken: 0,
+            resetPasswordOtp: 0
+          }
+        },
+        { $sort: { createdAt: -1 } }
+      ]);
+      
+      // Format response
+      const formattedAdmins = admins.map(admin => ({
+        user: {
+          id: admin._id,
+          name: admin.name,
+          email: admin.email,
+          isActive: admin.isActive,
+          createdAt: admin.createdAt
+        },
+        profile: admin.profile[0] || null
+      }));
+      
+      res.json({ 
+        success: true, 
+        admins: formattedAdmins
+      });
+    } catch (err) {
+      console.error('Error fetching admins:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to fetch admins'
+      });
+    }
+  }
+);
+
+// Create new admin
+app.post('/api/admin/management/admins',
+  authenticateAdmin,
+  checkPermission('system_settings'),
+  auditLog('create', 'admins'),
+  async (req, res) => {
+    try {
+      const { email, password, name, role } = req.body;
+
+      if (!email || !password || !name || !role) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Email, password, name, and role are required'
+        });
+      }
+
+      if (!rolePermissions[role]) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Invalid role specified'
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = await User.findOne({ email: email.toLowerCase() });
+      if (existingUser) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'User with this email already exists'
+        });
+      }
+
+      // Create new user
+      const hashedPassword = await bcrypt.hash(password, 12);
+      const newUser = new User({
+        name,
+        email: email.toLowerCase(),
+        password: hashedPassword,
+        emailVerified: true,
+        isAdmin: true,
+        isActive: true
+      });
+
+      await newUser.save();
+
+      // Create admin profile with role-based permissions
+      const adminProfile = new AdminProfile({
+        userId: newUser._id,
+        role: role,
+        systems: rolePermissions[role].systems,
+        permissions: rolePermissions[role].permissions,
+        isActive: true,
+        createdBy: req.user._id
+      });
+
+      await adminProfile.save();
+
+      res.status(201).json({
+        success: true,
+        message: 'Admin created successfully',
+        admin: {
+          id: newUser._id,
+          name: newUser.name,
+          email: newUser.email,
+          role: adminProfile.role,
+          systems: adminProfile.systems
+        }
+      });
+
+    } catch (err) {
+      console.error('Error creating admin:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to create admin'
+      });
+    }
+  }
+);
+
+// Update admin role and permissions
+app.put('/api/admin/management/admins/:id',
+  authenticateAdmin,
+  checkPermission('system_settings'),
+  auditLog('update', 'admins'),
+  async (req, res) => {
+    try {
+      const { role, isActive } = req.body;
+      const adminId = req.params.id;
+
+      // Prevent self-demotion
+      if (adminId === req.user._id.toString() && role !== 'super_admin') {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Cannot remove your own super_admin role'
+        });
+      }
+
+      const updates = {};
+      if (role && rolePermissions[role]) {
+        updates.role = role;
+        updates.systems = rolePermissions[role].systems;
+        updates.permissions = rolePermissions[role].permissions;
+      }
+      if (typeof isActive !== 'undefined') {
+        updates.isActive = isActive;
+      }
+
+      const updatedProfile = await AdminProfile.findOneAndUpdate(
+        { userId: adminId },
+        { $set: updates },
+        { new: true }
+      ).populate('userId', 'name email');
+
+      if (!updatedProfile) {
+        return res.status(404).json({ 
+          success: false,
+          message: 'Admin profile not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Admin updated successfully',
+        admin: {
+          id: updatedProfile.userId._id,
+          name: updatedProfile.userId.name,
+          email: updatedProfile.userId.email,
+          role: updatedProfile.role,
+          systems: updatedProfile.systems,
+          isActive: updatedProfile.isActive
+        }
+      });
+
+    } catch (err) {
+      console.error('Error updating admin:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to update admin'
+      });
+    }
+  }
+);
+
+// Get audit logs
+app.get('/api/admin/audit-logs',
+  authenticateAdmin,
+  checkPermission('analytics'),
+  async (req, res) => {
+    try {
+      const { system, page = 1, limit = 50 } = req.query;
+      
+      let query = {};
+      if (system) query.system = system;
+
+      const skip = (page - 1) * limit;
+      const logs = await AuditLog.find(query)
+        .populate('adminId', 'name email')
+        .sort({ timestamp: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+
+      const total = await AuditLog.countDocuments(query);
+
+      res.json({
+        success: true,
+        logs,
+        total,
+        totalPages: Math.ceil(total / limit),
+        currentPage: parseInt(page)
+      });
+    } catch (err) {
+      console.error('Error fetching audit logs:', err);
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to fetch audit logs'
+      });
+    }
+  }
+);
 
 // =============================================
 // EXISTING USER ROUTES (KEPT EXACTLY AS BEFORE)
@@ -1592,6 +2187,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
