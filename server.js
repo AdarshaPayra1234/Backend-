@@ -99,23 +99,28 @@ const googleClient = new OAuth2Client({
 // Email configuration for Hostinger with improved settings
 // Email Transporter (Your Working Configuration)
 // Updated Email Transporter Configuration
-const transporter = nodemailer.createTransporter({
+// =============================================
+// EMAIL CONFIGURATION (CORRECTED)
+// =============================================
+
+// ✅ CORRECTED Email Transporter Configuration
+const transporter = nodemailer.createTransport({
   host: 'smtp.hostinger.com',
   port: 465,
-  secure: true, // true for 465, false for other ports
+  secure: true,
   auth: {
-    user: process.env.EMAIL_USER, // Use environment variable
+    user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
   },
-  connectionTimeout: 30000, // 30 seconds
-  greetingTimeout: 30000,   // 30 seconds
-  socketTimeout: 30000,     // 30 seconds
-  dnsTimeout: 30000,        // 30 seconds
-  pool: true,               // Use connection pooling
-  maxConnections: 5,        // Maximum number of connections
-  maxMessages: 100,         // Maximum messages per connection
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
+  dnsTimeout: 30000,
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 100,
   tls: {
-    rejectUnauthorized: false // Allow self-signed certificates
+    rejectUnauthorized: false
   }
 });
 
@@ -128,11 +133,8 @@ const verifySMTPConnection = async () => {
   } catch (error) {
     console.error('❌ SMTP Connection Failed:', {
       error: error.message,
-      code: error.code,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      code: error.code
     });
-    
-    // Don't crash the app, just log the error
     return false;
   }
 };
@@ -154,14 +156,13 @@ const initializeEmailService = async (retries = 3, delay = 5000) => {
     }
   }
   
-  console.warn('⚠️ Email service initialization failed - emails will be queued but not sent until connection is established');
+  console.warn('⚠️ Email service initialization failed - emails will be queued');
   return false;
 };
 
 // Initialize email service when server starts
 initializeEmailService();
 
-// Email Queue System
 // Enhanced Email Queue with Connection Recovery
 let isEmailServiceReady = false;
 const emailQueue = [];
@@ -232,7 +233,7 @@ async function processEmailQueue() {
     
     // Try to reconnect
     setTimeout(() => {
-      initializeEmailService(1, 0); // Quick reconnect attempt
+      initializeEmailService(1, 0);
     }, 10000);
     return;
   }
@@ -240,35 +241,31 @@ async function processEmailQueue() {
   console.log(`🔄 Processing email queue (${emailQueue.length} emails)`);
   
   while (emailQueue.length > 0 && isEmailServiceReady) {
-    const emailJob = emailQueue[0]; // Peek at first item
+    const emailJob = emailQueue[0];
     
     try {
       await sendEmailWithRetry(emailJob);
-      emailQueue.shift(); // Remove only after successful send
+      emailQueue.shift();
       console.log(`✅ Email processed: ${emailJob.subject}`);
     } catch (error) {
       console.error(`❌ Email failed: ${emailJob.subject}`, error.message);
       
-      // Handle retry logic
       if (emailJob.attempts < emailJob.maxAttempts) {
         emailJob.attempts++;
         console.log(`🔄 Retrying email (${emailJob.attempts}/${emailJob.maxAttempts}): ${emailJob.subject}`);
         
-        // Exponential backoff with jitter
         const baseDelay = Math.min(Math.pow(2, emailJob.attempts) * 1000, 60000);
         const jitter = Math.random() * 1000;
         const delay = baseDelay + jitter;
         
-        // Move to end of queue for retry
         emailQueue.push(emailQueue.shift());
         
         setTimeout(() => {
           if (!isProcessingQueue) processEmailQueue();
         }, delay);
         
-        break; // Exit loop to wait for retry
+        break;
       } else {
-        // Max retries reached, remove from queue
         emailQueue.shift();
         console.error(`💀 Max retries reached for: ${emailJob.subject}`);
       }
@@ -278,6 +275,46 @@ async function processEmailQueue() {
   isProcessingQueue = false;
   console.log(`📧 Queue processing completed. Remaining: ${emailQueue.length}`);
 }
+
+// Add email to queue
+const queueEmail = (to, subject, html, priority = 'normal') => {
+  const emailJob = {
+    to,
+    subject,
+    html,
+    priority,
+    attempts: 0,
+    timestamp: Date.now(),
+    maxAttempts: 3
+  };
+  
+  emailQueue.push(emailJob);
+  
+  // Sort queue by priority
+  emailQueue.sort((a, b) => {
+    const priorityOrder = { high: 1, normal: 2, low: 3 };
+    return priorityOrder[a.priority] - priorityOrder[b.priority];
+  });
+  
+  console.log(`📧 Email queued: ${subject} to ${to}`);
+  
+  if (!isProcessingQueue) {
+    processEmailQueue();
+  }
+};
+
+// Fallback queue processor
+setInterval(() => {
+  if (emailQueue.length > 0 && !isProcessingQueue) {
+    console.log(`🔄 Processing fallback queue (${emailQueue.length} emails)`);
+    processEmailQueue();
+  }
+}, 120000);
+
+// Update your sendEmail function to use the queue
+const sendEmail = async (to, subject, html) => {
+  queueEmail(to, subject, html, 'normal');
+};
 // Helper functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
 
@@ -1750,6 +1787,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
