@@ -97,6 +97,7 @@ const googleClient = new OAuth2Client({
 // Email configuration
 // Email configuration for Hostinger
 // Email configuration for Hostinger with improved settings
+// Email Transporter (Your Working Configuration)
 const transporter = nodemailer.createTransport({
   host: 'smtp.hostinger.com',
   port: 465,
@@ -105,57 +106,123 @@ const transporter = nodemailer.createTransport({
     user: 'contact@jokercreation.store',
     pass: process.env.EMAIL_PASS
   },
-  tls: {
+  tls: { 
+    ciphers: 'SSLv3',
     rejectUnauthorized: false
   },
-  pool: true,
-  maxConnections: 3,
-  maxMessages: 50,
-  rateDelta: 1000, // Time window in ms
-  rateLimit: 5, // Max messages per time window
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 10000, // 10 seconds
-  socketTimeout: 10000, // 10 seconds
-  debug: process.env.NODE_ENV === 'development'
+  logger: true,
+  debug: true
 });
 
-// Add connection error handling
-transporter.verify(function(error, success) {
-  if (error) {
-    console.error('SMTP connection error:', error);
-  } else {
-    console.log('SMTP server is ready to take messages');
-  }
-});
+// Email Queue System
+const emailQueue = [];
+let isProcessingQueue = false;
 
-// Update sendEmail function with retry logic
-const sendEmailWithRetry = async (to, subject, html, maxRetries = 3) => {
-  let attempt = 0;
+// Add email to queue
+const queueEmail = (to, subject, html, priority = 'normal') => {
+  const emailJob = {
+    to,
+    subject,
+    html,
+    priority,
+    attempts: 0,
+    timestamp: Date.now(),
+    maxAttempts: 3
+  };
   
-  while (attempt < maxRetries) {
-    try {
-      await transporter.sendMail({
-        from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-        to,
-        subject,
-        html
-      });
-      console.log(`Email sent successfully to ${to}`);
-      return;
-    } catch (error) {
-      attempt++;
-      console.error(`Email send attempt ${attempt} failed:`, error.message);
-      
-      if (attempt >= maxRetries) {
-        throw error;
-      }
-      
-      // Exponential backoff: 2^attempt * 1000ms
-      const delay = Math.pow(2, attempt) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
+  emailQueue.push(emailJob);
+  
+  // Sort queue by priority (high priority first)
+  emailQueue.sort((a, b) => {
+    const priorityOrder = { high: 1, normal: 2, low: 3 };
+    return priorityOrder[a.priority] - priorityOrder[b.priority];
+  });
+  
+  console.log(`📧 Email queued: ${subject} to ${to}`);
+  
+  if (!isProcessingQueue) {
+    processEmailQueue();
   }
 };
+
+// Process email queue
+async function processEmailQueue() {
+  if (isProcessingQueue || emailQueue.length === 0) return;
+  
+  isProcessingQueue = true;
+  
+  while (emailQueue.length > 0) {
+    const emailJob = emailQueue.shift();
+    
+    try {
+      await sendEmailWithRetry(emailJob);
+      console.log(`✅ Email sent successfully: ${emailJob.subject} to ${emailJob.to}`);
+    } catch (error) {
+      console.error(`❌ Email failed: ${emailJob.subject} to ${emailJob.to}`, error.message);
+      
+      // Retry logic
+      if (emailJob.attempts < emailJob.maxAttempts) {
+        emailJob.attempts++;
+        console.log(`🔄 Retrying email (${emailJob.attempts}/${emailJob.maxAttempts}): ${emailJob.subject}`);
+        
+        // Exponential backoff: 2^attempts * 1000ms (max 30 seconds)
+        const delay = Math.min(Math.pow(2, emailJob.attempts) * 1000, 30000);
+        
+        setTimeout(() => {
+          emailQueue.unshift(emailJob); // Put back at front of queue
+          if (!isProcessingQueue) {
+            processEmailQueue();
+          }
+        }, delay);
+      } else {
+        console.error(`❌ Max retries reached for email: ${emailJob.subject}`);
+      }
+    }
+  }
+  
+  isProcessingQueue = false;
+}
+
+// Send email with retry logic
+async function sendEmailWithRetry(emailJob) {
+  try {
+    const info = await transporter.sendMail({
+      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+      to: emailJob.to,
+      subject: emailJob.subject,
+      html: emailJob.html
+    });
+    
+    console.log(`📨 Email sent: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error('Email sending error:', {
+      to: emailJob.to,
+      subject: emailJob.subject,
+      error: error.message,
+      code: error.code,
+      command: error.command
+    });
+    throw error;
+  }
+}
+
+// Fallback queue processor (runs every 2 minutes)
+setInterval(() => {
+  if (emailQueue.length > 0 && !isProcessingQueue) {
+    console.log(`🔄 Processing fallback queue (${emailQueue.length} emails)`);
+    processEmailQueue();
+  }
+}, 120000);
+
+// Verify email connection on startup
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ SMTP Connection Error:', error);
+  } else {
+    console.log('✅ SMTP Server is ready to accept messages');
+  }
+});
 
 // Helper functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
@@ -1629,6 +1696,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
