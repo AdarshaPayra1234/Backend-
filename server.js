@@ -2170,14 +2170,28 @@ app.put('/api/user', authenticateUser, async (req, res) => {
 });
 
 // Health check endpoint
+// ==================== RENDER FREE TIER KEEP-AWAKE ENDPOINTS ====================
+
+// Simple keep-alive endpoint for Render free tier
+app.get('/api/keep-alive', (req, res) => {
+  console.log(`🏓 Keep-alive ping at: ${new Date().toISOString()} from IP: ${req.ip}`);
+  
+  res.json({ 
+    success: true, 
+    message: 'Server is awake!',
+    timestamp: new Date().toISOString(),
+    serverTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    uptime: process.uptime()
+  });
+});
+
+// Quick health check for cronjobs
 app.get('/api/health', (req, res) => {
   res.json({ 
-    status: 'healthy', 
-    timestamp: new Date(),
-    services: {
-      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      email: transporter ? 'configured' : 'not configured'
-    }
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB'
   });
 });
 
@@ -2187,6 +2201,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
