@@ -97,187 +97,29 @@ const googleClient = new OAuth2Client({
 // Email configuration
 // Email configuration for Hostinger
 // Email configuration for Hostinger with improved settings
-// =============================================
-// EMAIL CONFIGURATION (CORRECTED & OPTIMIZED)
-// =============================================
-
-// ✅ CORRECTED Email Transporter Configuration
+// Email Transporter (Your Working Configuration)
 const transporter = nodemailer.createTransport({
   host: 'smtp.hostinger.com',
   port: 465,
   secure: true,
   auth: {
-    user: process.env.EMAIL_USER,
+    user: 'contact@jokercreation.store',
     pass: process.env.EMAIL_PASS
   },
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
-  dnsTimeout: 30000,
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-  tls: {
+  tls: { 
+    ciphers: 'SSLv3',
     rejectUnauthorized: false
-  }
+  },
+  logger: true,
+  debug: true
 });
 
-// Enhanced Email Queue with Connection Recovery
-let isEmailServiceReady = false;
+// Email Queue System
 const emailQueue = [];
 let isProcessingQueue = false;
 
-// Monitor email service status
-transporter.on('idle', () => {
-  isEmailServiceReady = true;
-  console.log('📧 Email service is ready');
-});
-
-transporter.on('error', (error) => {
-  isEmailServiceReady = false;
-  console.error('📧 Email service error:', error.message);
-});
-
-// Enhanced connection verification
-const verifySMTPConnection = async () => {
-  try {
-    await transporter.verify();
-    console.log('✅ SMTP Connection Verified Successfully');
-    isEmailServiceReady = true;
-    return true;
-  } catch (error) {
-    console.error('❌ SMTP Connection Failed:', {
-      error: error.message,
-      code: error.code
-    });
-    isEmailServiceReady = false;
-    return false;
-  }
-};
-
-// Verify connection on startup with retry logic
-const initializeEmailService = async (retries = 3, delay = 5000) => {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    console.log(`🔄 Attempting SMTP connection (${attempt}/${retries})...`);
-    
-    const isConnected = await verifySMTPConnection();
-    if (isConnected) {
-      console.log('✅ Email service initialized successfully');
-      return true;
-    }
-    
-    if (attempt < retries) {
-      console.log(`⏳ Retrying SMTP connection in ${delay/1000} seconds...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  
-  console.warn('⚠️ Email service initialization failed - emails will be queued');
-  return false;
-};
-
-// Initialize email service when server starts
-initializeEmailService();
-
-// Enhanced email sending with connection check
-async function sendEmailWithRetry(emailJob) {
-  // Check if email service is ready
-  if (!isEmailServiceReady) {
-    console.log('⏳ Email service not ready, queuing email...');
-    throw new Error('Email service not ready');
-  }
-
-  try {
-    const mailOptions = {
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: emailJob.to,
-      subject: emailJob.subject,
-      html: emailJob.html,
-      headers: {
-        'X-Priority': emailJob.priority === 'high' ? '1' : '3',
-        'X-MSMail-Priority': emailJob.priority === 'high' ? 'High' : 'Normal'
-      }
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Email sent successfully: ${info.messageId}`);
-    return info;
-  } catch (error) {
-    console.error('❌ Email sending failed:', {
-      to: emailJob.to,
-      subject: emailJob.subject,
-      error: error.message,
-      code: error.code
-    });
-    
-    // Mark service as not ready on connection errors
-    if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
-      isEmailServiceReady = false;
-      console.log('🔄 Email service marked as unavailable');
-    }
-    
-    throw error;
-  }
-}
-
-// Enhanced queue processor with health checks
-async function processEmailQueue() {
-  if (isProcessingQueue || emailQueue.length === 0) return;
-  
-  isProcessingQueue = true;
-  
-  // Check email service health before processing
-  if (!isEmailServiceReady) {
-    console.log('⏳ Email service not ready, skipping queue processing');
-    isProcessingQueue = false;
-    
-    // Try to reconnect
-    setTimeout(() => {
-      initializeEmailService(1, 0);
-    }, 10000);
-    return;
-  }
-  
-  console.log(`🔄 Processing email queue (${emailQueue.length} emails)`);
-  
-  while (emailQueue.length > 0 && isEmailServiceReady) {
-    const emailJob = emailQueue[0];
-    
-    try {
-      await sendEmailWithRetry(emailJob);
-      emailQueue.shift();
-      console.log(`✅ Email processed: ${emailJob.subject}`);
-    } catch (error) {
-      console.error(`❌ Email failed: ${emailJob.subject}`, error.message);
-      
-      if (emailJob.attempts < emailJob.maxAttempts) {
-        emailJob.attempts++;
-        console.log(`🔄 Retrying email (${emailJob.attempts}/${emailJob.maxAttempts}): ${emailJob.subject}`);
-        
-        const baseDelay = Math.min(Math.pow(2, emailJob.attempts) * 1000, 60000);
-        const jitter = Math.random() * 1000;
-        const delay = baseDelay + jitter;
-        
-        emailQueue.push(emailQueue.shift());
-        
-        setTimeout(() => {
-          if (!isProcessingQueue) processEmailQueue();
-        }, delay);
-        
-        break;
-      } else {
-        emailQueue.shift();
-        console.error(`💀 Max retries reached for: ${emailJob.subject}`);
-      }
-    }
-  }
-  
-  isProcessingQueue = false;
-  console.log(`📧 Queue processing completed. Remaining: ${emailQueue.length}`);
-}
-
-// Add email to queue (SINGLE sendEmail function)
-const sendEmail = (to, subject, html, priority = 'normal') => {
+// Add email to queue
+const queueEmail = (to, subject, html, priority = 'normal') => {
   const emailJob = {
     to,
     subject,
@@ -290,7 +132,7 @@ const sendEmail = (to, subject, html, priority = 'normal') => {
   
   emailQueue.push(emailJob);
   
-  // Sort queue by priority
+  // Sort queue by priority (high priority first)
   emailQueue.sort((a, b) => {
     const priorityOrder = { high: 1, normal: 2, low: 3 };
     return priorityOrder[a.priority] - priorityOrder[b.priority];
@@ -303,7 +145,69 @@ const sendEmail = (to, subject, html, priority = 'normal') => {
   }
 };
 
-// Fallback queue processor
+// Process email queue
+async function processEmailQueue() {
+  if (isProcessingQueue || emailQueue.length === 0) return;
+  
+  isProcessingQueue = true;
+  
+  while (emailQueue.length > 0) {
+    const emailJob = emailQueue.shift();
+    
+    try {
+      await sendEmailWithRetry(emailJob);
+      console.log(`✅ Email sent successfully: ${emailJob.subject} to ${emailJob.to}`);
+    } catch (error) {
+      console.error(`❌ Email failed: ${emailJob.subject} to ${emailJob.to}`, error.message);
+      
+      // Retry logic
+      if (emailJob.attempts < emailJob.maxAttempts) {
+        emailJob.attempts++;
+        console.log(`🔄 Retrying email (${emailJob.attempts}/${emailJob.maxAttempts}): ${emailJob.subject}`);
+        
+        // Exponential backoff: 2^attempts * 1000ms (max 30 seconds)
+        const delay = Math.min(Math.pow(2, emailJob.attempts) * 1000, 30000);
+        
+        setTimeout(() => {
+          emailQueue.unshift(emailJob); // Put back at front of queue
+          if (!isProcessingQueue) {
+            processEmailQueue();
+          }
+        }, delay);
+      } else {
+        console.error(`❌ Max retries reached for email: ${emailJob.subject}`);
+      }
+    }
+  }
+  
+  isProcessingQueue = false;
+}
+
+// Send email with retry logic
+async function sendEmailWithRetry(emailJob) {
+  try {
+    const info = await transporter.sendMail({
+      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+      to: emailJob.to,
+      subject: emailJob.subject,
+      html: emailJob.html
+    });
+    
+    console.log(`📨 Email sent: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error('Email sending error:', {
+      to: emailJob.to,
+      subject: emailJob.subject,
+      error: error.message,
+      code: error.code,
+      command: error.command
+    });
+    throw error;
+  }
+}
+
+// Fallback queue processor (runs every 2 minutes)
 setInterval(() => {
   if (emailQueue.length > 0 && !isProcessingQueue) {
     console.log(`🔄 Processing fallback queue (${emailQueue.length} emails)`);
@@ -311,13 +215,20 @@ setInterval(() => {
   }
 }, 120000);
 
-// =============================================
-// HELPER FUNCTIONS (KEEP THESE - THEY'RE FINE)
-// =============================================
+// Verify email connection on startup
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ SMTP Connection Error:', error);
+  } else {
+    console.log('✅ SMTP Server is ready to accept messages');
+  }
+});
 
+// Helper functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
 
 const generateOTP = () => {
+  // Generate a 6-digit numeric OTP
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
@@ -334,7 +245,19 @@ const generateJWT = (user) => {
   );
 };
 
-// getLocationFromIp function remains the same
+const sendEmail = async (to, subject, html) => {
+  try {
+    await transporter.sendMail({
+      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      html
+    });
+  } catch (error) {
+    console.error('Email sending error:', error);
+  }
+};
+
 const getLocationFromIp = (ip) => {
   const geo = geoip.lookup(ip) || {};
   return {
@@ -1773,13 +1696,3 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
-
-
-
-
-
-
-
-
-
-
