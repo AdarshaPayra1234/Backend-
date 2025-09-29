@@ -97,10 +97,8 @@ const googleClient = new OAuth2Client({
 // Email configuration
 // Email configuration for Hostinger
 // Email configuration for Hostinger with improved settings
-// Email Transporter (Your Working Configuration)
-// Updated Email Transporter Configuration
 // =============================================
-// EMAIL CONFIGURATION (CORRECTED)
+// EMAIL CONFIGURATION (CORRECTED & OPTIMIZED)
 // =============================================
 
 // ✅ CORRECTED Email Transporter Configuration
@@ -124,17 +122,35 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// Enhanced Email Queue with Connection Recovery
+let isEmailServiceReady = false;
+const emailQueue = [];
+let isProcessingQueue = false;
+
+// Monitor email service status
+transporter.on('idle', () => {
+  isEmailServiceReady = true;
+  console.log('📧 Email service is ready');
+});
+
+transporter.on('error', (error) => {
+  isEmailServiceReady = false;
+  console.error('📧 Email service error:', error.message);
+});
+
 // Enhanced connection verification
 const verifySMTPConnection = async () => {
   try {
     await transporter.verify();
     console.log('✅ SMTP Connection Verified Successfully');
+    isEmailServiceReady = true;
     return true;
   } catch (error) {
     console.error('❌ SMTP Connection Failed:', {
       error: error.message,
       code: error.code
     });
+    isEmailServiceReady = false;
     return false;
   }
 };
@@ -162,22 +178,6 @@ const initializeEmailService = async (retries = 3, delay = 5000) => {
 
 // Initialize email service when server starts
 initializeEmailService();
-
-// Enhanced Email Queue with Connection Recovery
-let isEmailServiceReady = false;
-const emailQueue = [];
-let isProcessingQueue = false;
-
-// Monitor email service status
-transporter.on('idle', () => {
-  isEmailServiceReady = true;
-  console.log('📧 Email service is ready');
-});
-
-transporter.on('error', (error) => {
-  isEmailServiceReady = false;
-  console.error('📧 Email service error:', error.message);
-});
 
 // Enhanced email sending with connection check
 async function sendEmailWithRetry(emailJob) {
@@ -276,8 +276,8 @@ async function processEmailQueue() {
   console.log(`📧 Queue processing completed. Remaining: ${emailQueue.length}`);
 }
 
-// Add email to queue
-const queueEmail = (to, subject, html, priority = 'normal') => {
+// Add email to queue (SINGLE sendEmail function)
+const sendEmail = (to, subject, html, priority = 'normal') => {
   const emailJob = {
     to,
     subject,
@@ -311,15 +311,13 @@ setInterval(() => {
   }
 }, 120000);
 
-// Update your sendEmail function to use the queue
-const sendEmail = async (to, subject, html) => {
-  queueEmail(to, subject, html, 'normal');
-};
-// Helper functions
+// =============================================
+// HELPER FUNCTIONS (KEEP THESE - THEY'RE FINE)
+// =============================================
+
 const generateToken = () => crypto.randomBytes(32).toString('hex');
 
 const generateOTP = () => {
-  // Generate a 6-digit numeric OTP
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
@@ -336,19 +334,7 @@ const generateJWT = (user) => {
   );
 };
 
-const sendEmail = async (to, subject, html) => {
-  try {
-    await transporter.sendMail({
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to,
-      subject,
-      html
-    });
-  } catch (error) {
-    console.error('Email sending error:', error);
-  }
-};
-
+// getLocationFromIp function remains the same
 const getLocationFromIp = (ip) => {
   const geo = geoip.lookup(ip) || {};
   return {
@@ -1787,6 +1773,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
