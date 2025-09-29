@@ -96,23 +96,66 @@ const googleClient = new OAuth2Client({
 
 // Email configuration
 // Email configuration for Hostinger
+// Email configuration for Hostinger with improved settings
 const transporter = nodemailer.createTransport({
   host: 'smtp.hostinger.com',
-  port: 465, // SSL port
-  secure: true, // true for 465, false for other ports
+  port: 465,
+  secure: true,
   auth: {
-    user: 'contact@jokercreation.store', // Your Hostinger email
-    pass: process.env.EMAIL_PASS // Password from .env
+    user: 'contact@jokercreation.store',
+    pass: process.env.EMAIL_PASS
   },
   tls: {
-    rejectUnauthorized: false // For self-signed certificates
+    rejectUnauthorized: false
   },
-  pool: true, // Use connection pooling
-  maxConnections: 5,
-  maxMessages: 100,
-  rateLimit: 5,
+  pool: true,
+  maxConnections: 3,
+  maxMessages: 50,
+  rateDelta: 1000, // Time window in ms
+  rateLimit: 5, // Max messages per time window
+  connectionTimeout: 10000, // 10 seconds
+  greetingTimeout: 10000, // 10 seconds
+  socketTimeout: 10000, // 10 seconds
   debug: process.env.NODE_ENV === 'development'
 });
+
+// Add connection error handling
+transporter.verify(function(error, success) {
+  if (error) {
+    console.error('SMTP connection error:', error);
+  } else {
+    console.log('SMTP server is ready to take messages');
+  }
+});
+
+// Update sendEmail function with retry logic
+const sendEmailWithRetry = async (to, subject, html, maxRetries = 3) => {
+  let attempt = 0;
+  
+  while (attempt < maxRetries) {
+    try {
+      await transporter.sendMail({
+        from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+        to,
+        subject,
+        html
+      });
+      console.log(`Email sent successfully to ${to}`);
+      return;
+    } catch (error) {
+      attempt++;
+      console.error(`Email send attempt ${attempt} failed:`, error.message);
+      
+      if (attempt >= maxRetries) {
+        throw error;
+      }
+      
+      // Exponential backoff: 2^attempt * 1000ms
+      const delay = Math.pow(2, attempt) * 1000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
 
 // Helper functions
 const generateToken = () => crypto.randomBytes(32).toString('hex');
@@ -1103,7 +1146,8 @@ app.post('/api/signup/google', async (req, res) => {
     const token = generateJWT(user);
 
     // Send notification email to admin
-    await sendEmail(
+    // Send notification email to admin asynchronously
+    sendEmail(
       process.env.ADMIN_EMAIL,
       'New Google Signup - Joker Creation Studio',
       `<div style="font-family: Arial, sans-serif;">
@@ -1115,8 +1159,12 @@ app.post('/api/signup/google', async (req, res) => {
         <p><strong>Location:</strong> ${location.city}, ${location.region}, ${location.country}</p>
         <p><strong>Signup Method:</strong> Google OAuth</p>
       </div>`
-    );
+    ).catch(err => {
+      console.error('Failed to send admin notification email:', err);
+      // Don't fail the request if email fails
+    });
 
+    // Respond immediately without waiting for email to send
     res.json({
       success: true,
       token,
@@ -1581,6 +1629,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
