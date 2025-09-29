@@ -1047,50 +1047,29 @@ app.post('/api/reset-password', async (req, res) => {
 });
 
 // Google Sign-In Endpoint (Signup)
-// Google Sign-Up Endpoint (with Phone Verification Support)
+// Google Sign-Up Endpoint (Updated to handle frontend data structure)
 app.post('/api/signup/google', async (req, res) => {
   try {
-    const { credential, userAgent, name, email, googleId, picture, phone } = req.body;
+    const { name, email, googleId, picture, phone } = req.body;
     const ip = req.clientIp;
     const location = getLocationFromIp(ip);
+    const userAgent = req.headers['user-agent'];
     
-    // Support both credential-based and direct data signup
-    let payload;
-    if (credential) {
-      // Traditional Google OAuth flow
-      const ticket = await googleClient.verifyIdToken({
-        idToken: credential,
-        audience: process.env.GOOGLE_CLIENT_ID
-      });
-      payload = ticket.getPayload();
-    } else if (googleId && email) {
-      // Direct data flow (from frontend modal with phone verification)
-      payload = {
-        sub: googleId,
-        email: email,
-        email_verified: true,
-        name: name,
-        picture: picture
-      };
-    } else {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid request parameters. Either credential or googleId+email are required.'
-      });
-    }
+    console.log('Google signup request data:', { name, email, googleId, picture, phone }); // Debug log
 
-    if (!payload.email_verified) {
+    // Validate required fields
+    if (!name || !email || !googleId) {
       return res.status(400).json({ 
         success: false,
-        message: 'Google email not verified'
+        message: 'Name, email and googleId are required'
       });
     }
 
     // Check if user already exists
     let user = await User.findOne({ 
       $or: [
-        { email: payload.email.toLowerCase() },
-        { googleId: payload.sub }
+        { email: email.toLowerCase() },
+        { googleId: googleId }
       ]
     });
 
@@ -1103,20 +1082,20 @@ app.post('/api/signup/google', async (req, res) => {
       user.lastLogin = new Date();
       user.ipAddress = ip;
       user.location = location;
-      user.userAgent = userAgent || req.headers['user-agent'];
+      user.userAgent = userAgent;
       await user.save();
     } else {
       // Create new user
       user = new User({
-        name: payload.name,
-        email: payload.email.toLowerCase(),
-        googleId: payload.sub,
-        phone: phone,
+        name: name,
+        email: email.toLowerCase(),
+        googleId: googleId,
+        phone: phone || '',
         emailVerified: true,
         lastLogin: new Date(),
         ipAddress: ip,
         location: location,
-        userAgent: userAgent || req.headers['user-agent']
+        userAgent: userAgent
       });
       await user.save();
     }
@@ -1151,20 +1130,12 @@ app.post('/api/signup/google', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Google auth error:', error);
-    
-    // Handle specific errors
-    if (error.message.includes('Invalid token signature')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Google authentication token'
-      });
-    }
+    console.error('Google signup error:', error);
     
     res.status(500).json({
       success: false,
-      message: 'Google authentication failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Google signup failed',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
@@ -1610,6 +1581,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
