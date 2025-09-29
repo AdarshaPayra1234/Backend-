@@ -31,28 +31,162 @@ const app = express();
 app.set('trust proxy', 1);
 
 // Middleware
+// Enhanced CORS configuration for Google OAuth compatibility
 app.use(cors({
   origin: process.env.FRONTEND_URL,
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'X-Target-System',
+    'Accept',
+    'Origin',
+    'User-Agent'
+  ],
+  exposedHeaders: [
+    'Cross-Origin-Opener-Policy',
+    'Cross-Origin-Embedder-Policy'
+  ],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
-app.use(express.json());
-app.use(requestIp.mw());
 
-// Secure rate limiting configuration
- const limiter = rateLimit({
-   windowMs: 15 * 60 * 1000, // 15 minutes
-   max: 100,
+// Enhanced security and OAuth compatibility headers
+app.use((req, res, next) => {
+  // Essential headers for Google OAuth and modern web apps
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Target-System');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  
+  // Headers for Google OAuth popup compatibility
+  res.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  
+  // Security headers
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+  
+  // Cache control for API responses
+  if (req.path.startsWith('/api/')) {
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.header('Pragma', 'no-cache');
+    res.header('Expires', '0');
+  }
+
+  // Handle preflight requests immediately
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send();
+  }
+  
+  next();
+});
+
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    try {
+      JSON.parse(buf);
+    } catch (e) {
+      res.status(400).json({
+        success: false,
+        message: 'Invalid JSON in request body'
+      });
+      throw new Error('Invalid JSON');
+    }
+  }
+}));
+
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+app.use(requestIp.mw({
+  attributeName: 'clientIp',
+  headerName: 'x-forwarded-for'
+}));
+
+// Enhanced rate limiting configuration
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: (req) => {
+    // Different limits for different endpoints
+    if (req.path.includes('/api/keep-alive') || req.path.includes('/api/health')) {
+      return 300; // Higher limit for health checks
+    }
+    if (req.path.includes('/api/login') || req.path.includes('/api/signup')) {
+      return 50; // Lower limit for auth endpoints
+    }
+    if (req.path.includes('/api/admin')) {
+      return 200; // Moderate limit for admin endpoints
+    }
+    return 100; // Default limit
+  },
   validate: { 
     trustProxy: false // Don't trust X-Forwarded-For for rate limiting
   },
   keyGenerator: (req) => {
-     return req.socket.remoteAddress;
-   },
-   message: 'Too many requests from this IP, please try again later'
- });
- app.use(limiter);
+    // Use client IP from request-ip middleware
+    return req.clientIp || req.socket.remoteAddress;
+  },
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      message: 'Too many requests from this IP, please try again later',
+      retryAfter: Math.ceil(req.rateLimit.resetTime / 1000),
+      code: 'RATE_LIMIT_EXCEEDED'
+    });
+  },
+  skip: (req) => {
+    // Skip rate limiting for health checks in some cases
+    return req.path === '/api/health' && req.method === 'GET';
+  },
+  onLimitReached: (req, res, options) => {
+    console.warn(`Rate limit reached for IP: ${req.clientIp} on path: ${req.path}`);
+  }
+});
+
+// Apply rate limiting to all routes except static files
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    limiter(req, res, next);
+  } else {
+    next();
+  }
+});
+
+// Trust proxy configuration for Render
+app.set('trust proxy', function (ip) {
+  if (typeof ip === 'string') {
+    // Trust Render's proxy
+    return ip === '::ffff:127.0.0.1' || ip === '127.0.0.1' || ip.startsWith('::ffff:172.') || ip === '::1';
+  }
+  return false;
+});
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`${req.method} ${req.originalUrl} ${res.statusCode} - ${duration}ms - IP: ${req.clientIp}`);
+  });
+  
+  next();
+});
+
+// Error handling for JSON parsing
+app.use((error, req, res, next) => {
+  if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid JSON payload'
+    });
+  }
+  next();
+});
 
 // Database connection
 mongoose.connect(process.env.MONGO_URI)
@@ -2201,6 +2335,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
 });
+
 
 
 
